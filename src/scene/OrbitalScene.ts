@@ -70,6 +70,11 @@ export interface OrbitalDebugOptions {
   room: boolean;
 }
 
+export interface OrbitalSceneOptions {
+  projectorOutputCanvases?: readonly HTMLCanvasElement[];
+  onProjectorOutputFrame?: (index: number) => void;
+}
+
 export interface OrbitalDigitalTwinState {
   classification: "digital-twin";
   physicalProof: false;
@@ -108,6 +113,7 @@ const DIGITAL_TWIN_LIMITATIONS = Object.freeze([
 export class OrbitalScene {
   private readonly container: HTMLElement;
   private readonly scene = new THREE.Scene();
+  private readonly projectorOutputScene = new THREE.Scene();
   private readonly camera: THREE.PerspectiveCamera;
   private readonly renderer: THREE.WebGLRenderer;
   private readonly controls: OrbitControls;
@@ -127,6 +133,17 @@ export class OrbitalScene {
   private readonly surfaceMaterial = createOrbitalSurfaceMaterial();
   private readonly predictionMaterial = createPredictionGhostMaterial();
   private readonly sphereMesh: THREE.Mesh;
+  private readonly projectorOutputSphere: THREE.Mesh;
+  private readonly projectorOutputCameras: THREE.PerspectiveCamera[] = [];
+  private readonly projectorOutputTarget = new THREE.WebGLRenderTarget(640, 400, {
+    depthBuffer: true,
+    stencilBuffer: false,
+  });
+  private readonly projectorOutputPixels = new Uint8Array(640 * 400 * 4);
+  private readonly projectorOutputImage = new ImageData(640, 400);
+  private readonly projectorOutputCanvases: readonly HTMLCanvasElement[];
+  private readonly onProjectorOutputFrame?: (index: number) => void;
+  private nextProjectorOutputIndex = 0;
   private readonly predictionMesh: THREE.Mesh;
   private readonly residualLine: THREE.Line;
   private readonly residualLineGeometry: THREE.BufferGeometry;
@@ -186,8 +203,10 @@ export class OrbitalScene {
   private reducedMotion = false;
   private disposed = false;
 
-  public constructor(container: HTMLElement) {
+  public constructor(container: HTMLElement, options: OrbitalSceneOptions = {}) {
     this.container = container;
+    this.projectorOutputCanvases = options.projectorOutputCanvases ?? [];
+    this.onProjectorOutputFrame = options.onProjectorOutputFrame;
 
     this.scene.background = new THREE.Color(0x010204);
     this.scene.fog = new THREE.FogExp2(0x010204, 0.018);
@@ -238,6 +257,13 @@ export class OrbitalScene {
     this.sphereMesh.position.copy(DEFAULT_CENTER_M);
     this.sphereMesh.frustumCulled = false;
     this.scene.add(this.sphereMesh);
+    this.projectorOutputScene.background = new THREE.Color(0x000000);
+    this.projectorOutputSphere = new THREE.Mesh(sphereGeometry, this.surfaceMaterial);
+    this.projectorOutputSphere.name = "Projector raster surface";
+    this.projectorOutputSphere.position.copy(DEFAULT_CENTER_M);
+    this.projectorOutputSphere.frustumCulled = false;
+    this.projectorOutputScene.add(this.projectorOutputSphere);
+    this.projectorOutputTarget.texture.colorSpace = THREE.SRGBColorSpace;
 
     this.predictionMesh = new THREE.Mesh(
       sphereGeometry.clone(),
@@ -472,6 +498,7 @@ export class OrbitalScene {
     this.updateSpeakers(snapshot.quadLevels);
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
+    this.renderNextProjectorOutput();
   }
 
   public setDebugOptions(options: Partial<OrbitalDebugOptions>): void {
@@ -707,10 +734,12 @@ export class OrbitalScene {
     materials.forEach((material) => material.dispose());
 
     this.renderer.renderLists.dispose();
+    this.projectorOutputTarget.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
     this.renderer.domElement.remove();
     this.scene.clear();
+    this.projectorOutputScene.clear();
   }
 
   private buildLighting(): void {
@@ -1193,6 +1222,18 @@ export class OrbitalScene {
       const distance = direction.length();
       direction.normalize();
 
+      const outputCamera = new THREE.PerspectiveCamera(
+        definition.fovDeg,
+        640 / 400,
+        0.08,
+        100,
+      );
+      outputCamera.position.copy(source);
+      outputCamera.lookAt(targetPosition);
+      outputCamera.updateProjectionMatrix();
+      outputCamera.updateMatrixWorld(true);
+      this.projectorOutputCameras.push(outputCamera);
+
       const body = this.makeProjectorBody(definition.colorHex);
       body.position.copy(source);
       body.lookAt(targetPosition);
@@ -1250,11 +1291,84 @@ export class OrbitalScene {
 
   private rebuildProjectors(): void {
     this.projectorRigs.length = 0;
+    this.projectorOutputCameras.length = 0;
     this.projectorBodyGroup.clear();
     this.projectorDebugGroup.clear();
     this.projectorLightGroup.clear();
     this.projectorTargetGroup.clear();
     this.buildProjectors();
+  }
+
+  private renderNextProjectorOutput(): void {
+    if (this.projectorOutputCanvases.length === 0) return;
+    const index = this.nextProjectorOutputIndex % Math.min(
+      this.projectorOutputCanvases.length,
+      this.projectorOutputCameras.length,
+    );
+    const canvas = this.projectorOutputCanvases[index];
+    const outputCamera = this.projectorOutputCameras[index];
+    if (!canvas || !outputCamera) return;
+
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return;
+    const mode = canvas.dataset.outputMode === "pre" ? 1 : 2;
+    const uniforms = this.surfaceMaterial.uniforms;
+    const previousMode = Number(uniforms.uOutputPreviewMode.value);
+    const previousProjector = Number(uniforms.uOutputPreviewProjector.value);
+    const radii = uniforms.uRadii.value as THREE.Vector3;
+    const previousRadii = radii.clone();
+    const previousWobble = Number(uniforms.uWobble.value);
+    const previousDeformationRate = Number(uniforms.uDeformationRate.value);
+    const previousClearColour = this.renderer.getClearColor(new THREE.Color()).clone();
+    const previousClearAlpha = this.renderer.getClearAlpha();
+
+    uniforms.uOutputPreviewMode.value = mode;
+    uniforms.uOutputPreviewProjector.value = index;
+    if (mode === 1) {
+      radii.copy(DEFAULT_RADII_M);
+      uniforms.uWobble.value = 0;
+      uniforms.uDeformationRate.value = 0;
+      this.projectorOutputSphere.position.copy(DEFAULT_CENTER_M);
+    } else {
+      this.projectorOutputSphere.position.copy(this.observedCenter);
+    }
+    this.projectorOutputSphere.updateMatrixWorld(true);
+    this.renderer.setRenderTarget(this.projectorOutputTarget);
+    this.renderer.setClearColor(0x000000, 1);
+    this.renderer.clear(true, true, true);
+    this.renderer.render(this.projectorOutputScene, outputCamera);
+    this.renderer.readRenderTargetPixels(
+      this.projectorOutputTarget,
+      0,
+      0,
+      640,
+      400,
+      this.projectorOutputPixels,
+    );
+    this.renderer.setRenderTarget(null);
+    this.renderer.setClearColor(previousClearColour, previousClearAlpha);
+
+    const destination = this.projectorOutputImage.data;
+    const rowBytes = 640 * 4;
+    for (let y = 0; y < 400; y += 1) {
+      const sourceOffset = (399 - y) * rowBytes;
+      destination.set(
+        this.projectorOutputPixels.subarray(sourceOffset, sourceOffset + rowBytes),
+        y * rowBytes,
+      );
+    }
+    context.putImageData(this.projectorOutputImage, 0, 0);
+    canvas.dataset.frameSource = "three-render-target";
+    canvas.dataset.frameProjector = String(index + 1);
+    canvas.dataset.frameMode = mode === 1 ? "pre-mapping" : "post-mapping";
+
+    radii.copy(previousRadii);
+    uniforms.uWobble.value = previousWobble;
+    uniforms.uDeformationRate.value = previousDeformationRate;
+    uniforms.uOutputPreviewMode.value = previousMode;
+    uniforms.uOutputPreviewProjector.value = previousProjector;
+    this.onProjectorOutputFrame?.(index);
+    this.nextProjectorOutputIndex = (index + 1) % this.projectorOutputCameras.length;
   }
 
   private makeProjectorBody(

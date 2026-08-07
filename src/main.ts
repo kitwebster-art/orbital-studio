@@ -530,7 +530,10 @@ ui = new StudioUI(root, score, {
   },
 });
 
-scene = new OrbitalScene(ui.viewport);
+scene = new OrbitalScene(ui.viewport, {
+  projectorOutputCanvases: ui.getProjectorOutputCanvases(),
+  onProjectorOutputFrame: (index) => ui.refreshProjectorOutputFrame(index),
+});
 engine.setFanCueOverride(DEFAULT_FAN_PREVIEW_SPEED);
 syncReducedMotion();
 if (reducedMotionQuery?.addEventListener) {
