@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.codex/
+ops/
+output/
+tmp/
+qa/
+research/
+docs/overnight-*.md
+public/docs/
+scripts/build_installation_guide.py
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+.DS_Store

@@ -1,0 +1,154 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orbital.cue-state/1.0",
+  "title": "Orbital Cue State v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "emittedAtMonotonicS",
+    "showTimeS",
+    "movement",
+    "audiovisual",
+    "quadLevels",
+    "projectorLevels",
+    "fanCue",
+    "fanTelemetry",
+    "world"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "orbital.cue-state/1.0"
+    },
+    "emittedAtMonotonicS": {
+      "type": "number",
+      "minimum": 0
+    },
+    "showTimeS": {
+      "type": "number",
+      "minimum": 0
+    },
+    "movement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "progress"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "progress": {
+          "$ref": "#/$defs/unit"
+        }
+      }
+    },
+    "audiovisual": {
+      "$ref": "#/$defs/parameters"
+    },
+    "quadLevels": {
+      "type": "array",
+      "minItems": 4,
+      "maxItems": 4,
+      "items": {
+        "$ref": "#/$defs/unit"
+      }
+    },
+    "projectorLevels": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": {
+        "$ref": "#/$defs/unit"
+      }
+    },
+    "fanCue": {
+      "$ref": "#/$defs/unit"
+    },
+    "fanTelemetry": {
+      "$ref": "#/$defs/fanTelemetry"
+    },
+    "world": {
+      "$ref": "./world-state-v1.schema.json"
+    }
+  },
+  "$defs": {
+    "unit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "energy",
+        "brightness",
+        "visualDensity",
+        "fluidity",
+        "fracture",
+        "glitch",
+        "organic",
+        "melody",
+        "sub",
+        "spatialMotion",
+        "residualGain",
+        "predictionVisibility",
+        "fanCue"
+      ],
+      "properties": {
+        "energy": { "$ref": "#/$defs/unit" },
+        "brightness": { "$ref": "#/$defs/unit" },
+        "visualDensity": { "$ref": "#/$defs/unit" },
+        "fluidity": { "$ref": "#/$defs/unit" },
+        "fracture": { "$ref": "#/$defs/unit" },
+        "glitch": { "$ref": "#/$defs/unit" },
+        "organic": { "$ref": "#/$defs/unit" },
+        "melody": { "$ref": "#/$defs/unit" },
+        "sub": { "$ref": "#/$defs/unit" },
+        "spatialMotion": { "$ref": "#/$defs/unit" },
+        "residualGain": { "$ref": "#/$defs/unit" },
+        "predictionVisibility": { "$ref": "#/$defs/unit" },
+        "fanCue": { "$ref": "#/$defs/unit" }
+      }
+    },
+    "fanTelemetry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "simulated",
+        "hardwareWriteEnabled",
+        "requestedCue",
+        "acceptedCue",
+        "actualNormalized",
+        "controllerHealthy",
+        "fault"
+      ],
+      "properties": {
+        "simulated": {
+          "const": true
+        },
+        "hardwareWriteEnabled": {
+          "const": false
+        },
+        "requestedCue": {
+          "$ref": "#/$defs/unit"
+        },
+        "acceptedCue": {
+          "$ref": "#/$defs/unit"
+        },
+        "actualNormalized": {
+          "$ref": "#/$defs/unit"
+        },
+        "controllerHealthy": {
+          "type": "boolean"
+        },
+        "fault": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "minLength": 1 }
+          ]
+        }
+      }
+    }
+  }
+}

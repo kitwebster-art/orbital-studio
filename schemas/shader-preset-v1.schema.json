@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orbital.shader-preset/1.0",
+  "title": "Orbital shader preset v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "shaderId", "seed", "parameters"],
+  "properties": {
+    "schemaVersion": { "const": "orbital.shader-preset/1.0" },
+    "shaderId": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "parameters": {
+      "type": "object",
+      "minProperties": 1,
+      "additionalProperties": {
+        "type": ["number", "boolean", "string"]
+      }
+    }
+  }
+}

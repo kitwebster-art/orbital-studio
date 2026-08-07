@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orbital.content-preset/1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "title", "savedAt", "score"],
+  "properties": {
+    "schemaVersion": {
+      "const": "orbital.content-preset/1.0"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 1
+    },
+    "savedAt": {
+      "type": "string",
+      "minLength": 1
+    },
+    "score": {
+      "$ref": "./show-score-v1.schema.json"
+    }
+  }
+}

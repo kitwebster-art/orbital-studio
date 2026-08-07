@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orbital.camera-command/1.0",
+  "title": "Orbital camera bridge command v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "commandId",
+    "issuedAtMonotonicS",
+    "action",
+    "cameraId",
+    "parameters"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "orbital.camera-command/1.0" },
+    "commandId": { "type": "string", "minLength": 1 },
+    "issuedAtMonotonicS": { "type": "number", "minimum": 0 },
+    "action": {
+      "enum": [
+        "discover",
+        "configure",
+        "set-exposure",
+        "set-gain",
+        "set-trigger-mode",
+        "arm",
+        "start-stream",
+        "stop-stream"
+      ]
+    },
+    "cameraId": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+    "parameters": {
+      "type": "object",
+      "additionalProperties": {
+        "type": ["string", "number", "boolean"]
+      }
+    }
+  }
+}

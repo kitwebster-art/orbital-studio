@@ -1,0 +1,119 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orbital.projection-rig/1.0",
+  "title": "Orbital five-projector rig v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "name",
+    "mappingMode",
+    "materialRotationIndependent",
+    "sphereDiameterM",
+    "projectorCount",
+    "projectors",
+    "calibration"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "orbital.projection-rig/1.0" },
+    "name": { "type": "string", "minLength": 1 },
+    "mappingMode": { "const": "shape-locked-world" },
+    "materialRotationIndependent": { "const": true },
+    "sphereDiameterM": { "type": "number", "exclusiveMinimum": 0 },
+    "projectorCount": { "const": 5 },
+    "projectors": {
+      "type": "array",
+      "minItems": 5,
+      "maxItems": 5,
+      "items": { "$ref": "#/$defs/projector" }
+    },
+    "calibration": { "$ref": "#/$defs/calibration" }
+  },
+  "$defs": {
+    "unit": { "type": "number", "minimum": 0, "maximum": 1 },
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "z"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "z": { "type": "number" }
+      }
+    },
+    "blend": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["left", "right", "top", "bottom"],
+      "properties": {
+        "left": { "$ref": "#/$defs/unit" },
+        "right": { "$ref": "#/$defs/unit" },
+        "top": { "$ref": "#/$defs/unit" },
+        "bottom": { "$ref": "#/$defs/unit" }
+      }
+    },
+    "projector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "index",
+        "positionM",
+        "targetM",
+        "colorHex",
+        "fovDeg",
+        "enabled",
+        "brightness",
+        "gamma",
+        "blackLevel",
+        "lensShift",
+        "blend"
+      ],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "label": { "type": "string", "minLength": 1 },
+        "index": { "type": "integer", "minimum": 0, "maximum": 4 },
+        "positionM": { "$ref": "#/$defs/point" },
+        "targetM": { "$ref": "#/$defs/point" },
+        "colorHex": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "fovDeg": { "type": "number", "exclusiveMinimum": 1, "exclusiveMaximum": 170 },
+        "enabled": { "type": "boolean" },
+        "brightness": { "$ref": "#/$defs/unit" },
+        "gamma": { "type": "number", "exclusiveMinimum": 0 },
+        "blackLevel": { "$ref": "#/$defs/unit" },
+        "lensShift": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["x", "y"],
+          "properties": {
+            "x": { "type": "number", "minimum": -1, "maximum": 1 },
+            "y": { "type": "number", "minimum": -1, "maximum": 1 }
+          }
+        },
+        "blend": { "$ref": "#/$defs/blend" }
+      }
+    },
+    "calibration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["state", "pattern", "reprojectionErrorPx", "lastCalibratedAt"],
+      "properties": {
+        "state": { "enum": ["uncalibrated", "simulated", "calibrated"] },
+        "pattern": { "enum": ["authored", "coverage", "grid", "black"] },
+        "reprojectionErrorPx": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "number", "minimum": 0 }
+          ]
+        },
+        "lastCalibratedAt": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "string", "format": "date-time" }
+          ]
+        }
+      }
+    }
+  }
+}

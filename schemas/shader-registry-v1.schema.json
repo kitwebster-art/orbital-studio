@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orbital.shader-registry/1.0",
+  "title": "Orbital shader registry v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "fallbackShaderId", "shaders"],
+  "properties": {
+    "schemaVersion": { "const": "orbital.shader-registry/1.0" },
+    "fallbackShaderId": { "$ref": "#/$defs/id" },
+    "shaders": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/shader" }
+    }
+  },
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+    },
+    "parameterId": {
+      "type": "string",
+      "pattern": "^[a-z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*$"
+    },
+    "unit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "parameter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "label", "type", "defaultValue", "description"],
+      "properties": {
+        "id": { "$ref": "#/$defs/parameterId" },
+        "label": { "type": "string", "minLength": 1 },
+        "type": {
+          "enum": ["unit", "number", "integer", "boolean", "colour", "enum"]
+        },
+        "defaultValue": {},
+        "min": { "type": "number" },
+        "max": { "type": "number" },
+        "step": { "type": "number", "exclusiveMinimum": 0 },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "description": { "type": "string", "minLength": 1 }
+      }
+    },
+    "audioInput": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "label",
+        "source",
+        "parameter",
+        "targetParameterId",
+        "response",
+        "depth",
+        "smoothingMs",
+        "description"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/parameterId" },
+        "label": { "type": "string", "minLength": 1 },
+        "source": { "enum": ["score", "audio-analysis", "tracking-derived"] },
+        "parameter": {
+          "enum": [
+            "energy",
+            "brightness",
+            "visualDensity",
+            "fluidity",
+            "fracture",
+            "glitch",
+            "organic",
+            "melody",
+            "sub",
+            "spatialMotion",
+            "residualGain",
+            "predictionVisibility"
+          ]
+        },
+        "targetParameterId": { "$ref": "#/$defs/parameterId" },
+        "response": { "enum": ["linear", "smoothstep", "envelope", "pulse"] },
+        "depth": { "$ref": "#/$defs/unit" },
+        "smoothingMs": { "type": "number", "minimum": 0 },
+        "description": { "type": "string", "minLength": 1 }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["moduleId", "kind"],
+      "properties": {
+        "moduleId": { "$ref": "#/$defs/id" },
+        "kind": { "enum": ["surface", "overlay", "postprocess"] },
+        "implementationPath": { "type": "string", "minLength": 1 }
+      }
+    },
+    "gpuEstimate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["score", "passes", "textureReads", "notes"],
+      "properties": {
+        "score": { "$ref": "#/$defs/unit" },
+        "passes": { "type": "integer", "minimum": 1 },
+        "textureReads": { "type": "integer", "minimum": 0 },
+        "notes": { "type": "string", "minLength": 1 }
+      }
+    },
+    "projectorCompatibility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minimumProjectors",
+        "maximumProjectors",
+        "supportedPatterns",
+        "supportsShapeLockedWorld",
+        "supportsCoveragePreview",
+        "safeLuminanceCeiling",
+        "notes"
+      ],
+      "properties": {
+        "minimumProjectors": { "type": "integer", "minimum": 1 },
+        "maximumProjectors": { "type": "integer", "minimum": 1, "maximum": 5 },
+        "supportedPatterns": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "enum": ["authored", "coverage", "grid", "black"] }
+        },
+        "supportsShapeLockedWorld": { "type": "boolean" },
+        "supportsCoveragePreview": { "type": "boolean" },
+        "safeLuminanceCeiling": { "$ref": "#/$defs/unit" },
+        "notes": { "type": "string", "minLength": 1 }
+      }
+    },
+    "shader": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "name",
+        "family",
+        "version",
+        "description",
+        "tags",
+        "source",
+        "defaultSeed",
+        "parameterDefinitions",
+        "audioReactiveInputs",
+        "gpuCost",
+        "gpuEstimate",
+        "projectorCompatibility",
+        "fallbackShaderId"
+      ],
+      "properties": {
+        "id": { "$ref": "#/$defs/id" },
+        "name": { "type": "string", "minLength": 1 },
+        "family": {
+          "enum": [
+            "neutral",
+            "contour",
+            "fluid",
+            "fracture",
+            "particle",
+            "geometric",
+            "planetary",
+            "residual"
+          ]
+        },
+        "version": { "type": "string", "minLength": 1 },
+        "description": { "type": "string", "minLength": 1 },
+        "tags": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "source": { "$ref": "#/$defs/source" },
+        "defaultSeed": { "type": "integer", "minimum": 0, "maximum": 4294967295 },
+        "parameterDefinitions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/parameter" }
+        },
+        "audioReactiveInputs": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/audioInput" }
+        },
+        "gpuCost": { "enum": ["low", "medium", "high"] },
+        "gpuEstimate": { "$ref": "#/$defs/gpuEstimate" },
+        "projectorCompatibility": { "$ref": "#/$defs/projectorCompatibility" },
+        "fallbackShaderId": {
+          "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }]
+        }
+      }
+    }
+  }
+}

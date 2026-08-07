@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "orbital.transport-command/1.0",
+  "title": "Orbital Studio transport command",
+  "description": "Ableton-neutral semantic command envelope for MIDI, OSC, Link and MTC bridges.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "id", "protocol", "kind", "issuedAtMonotonicS"],
+  "properties": {
+    "schemaVersion": { "const": "orbital.transport-command/1.0" },
+    "id": { "type": "string", "minLength": 1 },
+    "protocol": { "enum": ["midi", "osc", "link", "mtc"] },
+    "kind": {
+      "enum": ["start", "stop", "continue", "seek", "tempo", "clock", "heartbeat", "cue", "ping", "pong"]
+    },
+    "issuedAtMonotonicS": { "type": "number", "minimum": 0 },
+    "beat": { "type": "number", "minimum": 0 },
+    "timeS": { "type": "number", "minimum": 0 },
+    "tempoBpm": { "type": "number", "exclusiveMinimum": 0 },
+    "channel": { "type": "integer", "minimum": 0, "maximum": 15 },
+    "address": { "type": "string", "minLength": 1 },
+    "args": { "type": "array", "items": { "$ref": "#/$defs/value" } },
+    "timecode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["hours", "minutes", "seconds", "frames", "fps"],
+      "properties": {
+        "hours": { "type": "number", "minimum": 0 },
+        "minutes": { "type": "number", "minimum": 0 },
+        "seconds": { "type": "number", "minimum": 0 },
+        "frames": { "type": "number", "minimum": 0 },
+        "fps": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "payload": {
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/value" }
+    }
+  },
+  "$defs": {
+    "value": {
+      "oneOf": [
+        { "type": ["number", "string", "boolean", "null"] },
+        { "type": "array", "items": { "$ref": "#/$defs/value" } },
+        { "type": "object", "additionalProperties": { "$ref": "#/$defs/value" } }
+      ]
+    }
+  }
+}

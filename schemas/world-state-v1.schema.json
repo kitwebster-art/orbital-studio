@@ -1,0 +1,203 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://orbital.local/schema/world-state-v1.schema.json",
+  "title": "Orbital World State v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "sequence",
+    "mode",
+    "monotonicTimeS",
+    "status",
+    "stateValid",
+    "measurementValid",
+    "confidence",
+    "centerM",
+    "velocityMps",
+    "shape",
+    "prediction",
+    "diagnostics",
+    "materialRotationTracked"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "orbital.world-state/1.0"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "mode": {
+      "enum": ["simulation", "replay", "live"]
+    },
+    "monotonicTimeS": {
+      "type": "number",
+      "minimum": 0
+    },
+    "status": {
+      "enum": ["acquiring", "tracking", "degraded", "lost", "unavailable"]
+    },
+    "stateValid": {
+      "type": "boolean"
+    },
+    "measurementValid": {
+      "type": "boolean"
+    },
+    "confidence": {
+      "$ref": "#/$defs/unit"
+    },
+    "centerM": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/vec3" }
+      ]
+    },
+    "velocityMps": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/vec3" }
+      ]
+    },
+    "shape": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/shape" }
+      ]
+    },
+    "prediction": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/prediction" }
+      ]
+    },
+    "diagnostics": {
+      "$ref": "#/$defs/diagnostics"
+    },
+    "materialRotationTracked": {
+      "const": false
+    }
+  },
+  "$defs": {
+    "unit": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "vec3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "z"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" },
+        "z": { "type": "number" }
+      }
+    },
+    "positiveVec3": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y", "z"],
+      "properties": {
+        "x": { "type": "number", "exclusiveMinimum": 0 },
+        "y": { "type": "number", "exclusiveMinimum": 0 },
+        "z": { "type": "number", "exclusiveMinimum": 0 }
+      }
+    },
+    "shape": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "radiiM",
+        "principalAxisDeg",
+        "wobble",
+        "deformationRate",
+        "volumeProxy"
+      ],
+      "properties": {
+        "radiiM": {
+          "$ref": "#/$defs/positiveVec3"
+        },
+        "principalAxisDeg": {
+          "type": "number"
+        },
+        "wobble": {
+          "$ref": "#/$defs/unit"
+        },
+        "deformationRate": {
+          "type": "number",
+          "minimum": 0
+        },
+        "volumeProxy": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        }
+      }
+    },
+    "prediction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "predictedCenterM",
+        "residualM",
+        "horizonMs",
+        "confidence",
+        "model"
+      ],
+      "properties": {
+        "predictedCenterM": {
+          "$ref": "#/$defs/vec3"
+        },
+        "residualM": {
+          "$ref": "#/$defs/vec3"
+        },
+        "horizonMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "confidence": {
+          "$ref": "#/$defs/unit"
+        },
+        "model": {
+          "enum": ["constant-velocity", "authored", "disabled"]
+        }
+      }
+    },
+    "diagnostics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sourceAgeMs",
+        "processingMs",
+        "droppedFrames",
+        "activeCameraCount",
+        "flags"
+      ],
+      "properties": {
+        "sourceAgeMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "processingMs": {
+          "type": "number",
+          "minimum": 0
+        },
+        "droppedFrames": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "activeCameraCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        }
+      }
+    }
+  }
+}
