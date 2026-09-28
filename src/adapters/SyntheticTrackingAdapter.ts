@@ -6,6 +6,9 @@ import {
   type WorldState,
 } from "../core/contracts";
 import { clamp } from "../core/math";
+import { LATEX_BALLOON_MOTION_PROFILE } from "../core/realBalloonReference";
+
+export { LATEX_BALLOON_MOTION_PROFILE } from "../core/realBalloonReference";
 
 export interface SyntheticTrackingFaultWindow {
   startS: number;
@@ -27,34 +30,6 @@ const DEFAULT_CENTER: Vec3 = {
 };
 
 const TAU = Math.PI * 2;
-
-/**
- * A deliberately slow synthetic profile derived from IMG_6021.MOV. The
- * reference is only 17.67 seconds long, so these are perceptual target bands,
- * not claimed material constants. Keeping the periods named makes it harder
- * for future tuning to accidentally reintroduce rapid, noise-like shaking.
- */
-export const LATEX_BALLOON_MOTION_PROFILE = Object.freeze({
-  centerDriftPeriodS: Object.freeze({
-    xPrimary: 14.8,
-    xSecondary: 9.6,
-    yPrimary: 18.4,
-    ySecondary: 10.7,
-    zPrimary: 16.2,
-    zSecondary: 11.8,
-  }),
-  grossBulgePeriodS: Object.freeze({
-    primary: 10.6,
-    secondary: 7.4,
-    vertical: 12.8,
-  }),
-  grossBulgeAmplitude: Object.freeze({
-    primary: 0.064,
-    secondary: 0.021,
-    vertical: 0.014,
-  }),
-  principalAxisDriftDegPerS: 0.9,
-});
 
 function angularSpeed(periodS: number): number {
   return TAU / periodS;
@@ -195,7 +170,7 @@ export class SyntheticTrackingAdapter implements TrackingAdapter {
       bulgeAmplitude.primary * Math.sin(timeS * primaryBulgeSpeed) +
       bulgeAmplitude.secondary * Math.sin(timeS * secondaryBulgeSpeed + 0.6);
     const yDeformation =
-      -0.58 * xDeformation +
+      -0.45 * xDeformation +
       bulgeAmplitude.vertical * Math.sin(timeS * verticalBulgeSpeed - 0.3);
     const radiusX = this.nominalRadiusM * (1 + xDeformation);
     const radiusY = this.nominalRadiusM * (1 + yDeformation);
@@ -205,7 +180,7 @@ export class SyntheticTrackingAdapter implements TrackingAdapter {
       bulgeAmplitude.primary * primaryBulgeSpeed * Math.cos(timeS * primaryBulgeSpeed) +
       bulgeAmplitude.secondary * secondaryBulgeSpeed * Math.cos(timeS * secondaryBulgeSpeed + 0.6);
     const yDeformationRate =
-      -0.58 * xDeformationRate +
+      -0.45 * xDeformationRate +
       bulgeAmplitude.vertical * verticalBulgeSpeed * Math.cos(timeS * verticalBulgeSpeed - 0.3);
 
     return {

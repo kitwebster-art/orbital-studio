@@ -1,0 +1,578 @@
+{
+  "schemaVersion": "orbital.render-project/1.2",
+  "projectId": "orbital-kaleidoscopic-warp",
+  "exportedAt": "2026-08-12T00:00:00.000Z",
+  "shaderManifest": {
+    "schemaVersion": "orbital.shader-manifest/1.0",
+    "checksum": "fnv1a32:69f76247"
+  },
+  "shader": {
+    "preset": {
+      "schemaVersion": "orbital.shader-preset/1.0",
+      "shaderId": "kaleidoscopic-warp",
+      "seed": 115483,
+      "parameters": {
+        "symmetry": 0.58,
+        "speed": 0.26,
+        "sharpness": 0.66,
+        "warp": 0.48,
+        "spectrum": 0.7
+      }
+    },
+    "look": {
+      "motion": 2.2,
+      "scale": 1,
+      "rotation": 0,
+      "hue": 0,
+      "saturation": 1,
+      "contrast": 1,
+      "softness": 0.5,
+      "level": 1.14
+    }
+  },
+  "surfaceRegions": {
+    "enabled": true,
+    "assignments": [
+      {
+        "schemaVersion": "orbital.mapping-lab/1.0",
+        "regionId": "north-cap",
+        "shaderId": "geodesic-wireframe",
+        "shaderFamily": "geometric",
+        "shaderPresetId": "geodesic-wireframe-native",
+        "intensity": 1
+      },
+      {
+        "schemaVersion": "orbital.mapping-lab/1.0",
+        "regionId": "equator",
+        "shaderId": "iridescent-film",
+        "shaderFamily": "fluid",
+        "shaderPresetId": "iridescent-film-native",
+        "intensity": 1
+      },
+      {
+        "schemaVersion": "orbital.mapping-lab/1.0",
+        "regionId": "south-band",
+        "shaderId": "black-hole-lensing",
+        "shaderFamily": "planetary",
+        "shaderPresetId": "black-hole-lensing-native",
+        "intensity": 1
+      },
+      {
+        "schemaVersion": "orbital.mapping-lab/1.0",
+        "regionId": "residual-rim",
+        "shaderId": "truchet-tiles",
+        "shaderFamily": "geometric",
+        "shaderPresetId": "truchet-tiles-native",
+        "intensity": 1
+      }
+    ]
+  },
+  "livingSkins": {
+    "enabled": false,
+    "patchCount": 9,
+    "variety": 0.78,
+    "glitch": 0.34,
+    "flashRate": 0.58,
+    "sequenceMode": "eruption",
+    "eventHold": 0.78,
+    "attackSharpness": 0.72,
+    "breath": 0.66,
+    "edgeSoftness": 0.42,
+    "beautyLighting": 0.72,
+    "glow": 0.38,
+    "bpm": 112,
+    "phraseEvolution": 0.82
+  },
+  "installationRig": {
+    "classification": "planning-only",
+    "physicalValidation": "not-validated",
+    "cameraCoLocated": false,
+    "controls": {
+      "mode": "production-5",
+      "prototypeProjectorIndex": 0,
+      "projectorOpticId": "long-215",
+      "cameraLensId": "generic-6mm",
+      "nirIlluminatorId": "nir-850-60",
+      "cameraSeparationM": 0.65,
+      "hazeDensity": 0.28,
+      "showTruss": true,
+      "showCameras": true,
+      "showNir": true
+    },
+    "heads": [
+      {
+        "projectorIndex": 0,
+        "active": true,
+        "cameraActive": true,
+        "nirActive": true,
+        "trussBaseM": {
+          "x": -10.800346153846155,
+          "y": 0,
+          "z": 10.800192307692308
+        },
+        "cameraPositionM": {
+          "x": -10.340729201282732,
+          "y": 8.079647058823529,
+          "z": 10.340570444726334
+        },
+        "nirPositionM": {
+          "x": -9.996016486860167,
+          "y": 8.779647058823528,
+          "z": 9.995854047501853
+        },
+        "projectorDistanceM": 15.680679887318435,
+        "projectedWidthM": 7.293339482473691,
+        "projectedHeightM": 11.669343171957905
+      },
+      {
+        "projectorIndex": 1,
+        "active": true,
+        "cameraActive": true,
+        "nirActive": true,
+        "trussBaseM": {
+          "x": 10.800692307692309,
+          "y": 0,
+          "z": 10.799615384615386
+        },
+        "cameraPositionM": {
+          "x": 10.341061442192691,
+          "y": 8.079823529411765,
+          "z": 10.340007434858126
+        },
+        "nirPositionM": {
+          "x": 9.996338293067978,
+          "y": 8.779823529411765,
+          "z": 9.99530147254018
+        },
+        "projectorDistanceM": 15.68040875111554,
+        "projectedWidthM": 7.293213372611879,
+        "projectedHeightM": 11.669141396179008
+      },
+      {
+        "projectorIndex": 2,
+        "active": true,
+        "cameraActive": true,
+        "nirActive": true,
+        "trussBaseM": {
+          "x": -10.801038461538463,
+          "y": 0,
+          "z": -10.199423076923075
+        },
+        "cameraPositionM": {
+          "x": -10.328462550865309,
+          "y": 8.08,
+          "z": -9.753136163994363
+        },
+        "nirPositionM": {
+          "x": -9.974030617860445,
+          "y": 8.78,
+          "z": -9.418420979297828
+        },
+        "projectorDistanceM": 15.27336622263442,
+        "projectedWidthM": 7.103891266341591,
+        "projectedHeightM": 11.366226026146546
+      },
+      {
+        "projectorIndex": 3,
+        "active": true,
+        "cameraActive": false,
+        "nirActive": false,
+        "trussBaseM": {
+          "x": 10.801384615384617,
+          "y": 0,
+          "z": -10.20076923076923
+        },
+        "cameraPositionM": {
+          "x": 10.328836520128434,
+          "y": 8.080176470588235,
+          "z": -9.754452865765938
+        },
+        "nirPositionM": {
+          "x": 9.974425448686297,
+          "y": 8.780176470588234,
+          "z": -9.419715592013468
+        },
+        "projectorDistanceM": 15.2743947936219,
+        "projectedWidthM": 7.104369671452047,
+        "projectedHeightM": 11.366991474323275
+      },
+      {
+        "projectorIndex": 4,
+        "active": true,
+        "cameraActive": false,
+        "nirActive": false,
+        "trussBaseM": {
+          "x": -0.0017307692307692308,
+          "y": 0,
+          "z": -1.3990384615384615
+        },
+        "cameraPositionM": {
+          "x": -0.001552075079446281,
+          "y": 11.980352941176472,
+          "z": -0.749038486101231
+        },
+        "nirPositionM": {
+          "x": -0.0014180544659540685,
+          "y": 12.680352941176471,
+          "z": -0.2615385045233083
+        },
+        "projectorDistanceM": 7.580860792808995,
+        "projectedWidthM": 3.525981764097207,
+        "projectedHeightM": 5.641570822555531
+      }
+    ],
+    "projectorOptic": {
+      "id": "long-215",
+      "label": "Generic long throw · 2.15:1",
+      "throwRatio": 2.15,
+      "status": "planning-only"
+    },
+    "cameraLens": {
+      "id": "generic-6mm",
+      "label": "Generic 6 mm · 1/1.8 in planning sensor",
+      "focalLengthMm": 6,
+      "sensorWidthMm": 7.2,
+      "horizontalFovDeg": 61.92751306414704,
+      "status": "planning-only"
+    },
+    "nirIlluminator": {
+      "id": "nir-850-60",
+      "label": "Generic 850 nm flood · 60°",
+      "wavelengthNm": 850,
+      "beamAngleDeg": 60,
+      "status": "planning-only"
+    },
+    "limitations": [
+      "Optics and placement are planning values until measured on the physical balloon.",
+      "Warp, edge blend and black-level calibration remain venue-specific.",
+      "Camera capture and fusion run outside browser JavaScript."
+    ]
+  },
+  "shaderEventSound": {
+    "controls": {
+      "enabled": true,
+      "palette": "space",
+      "density": 0.46,
+      "reverb": 0.72,
+      "level": 0.58
+    },
+    "nativeAudioIncluded": false,
+    "audioOwner": "ableton-max"
+  },
+  "projectionRig": {
+    "schemaVersion": "orbital.projection-rig/1.0",
+    "name": "Orbital five-head rehearsal rig",
+    "mappingMode": "shape-locked-world",
+    "materialRotationIndependent": true,
+    "sphereDiameterM": 5,
+    "projectorCount": 5,
+    "projectors": [
+      {
+        "id": "projector-1",
+        "label": "Front left",
+        "index": 0,
+        "positionM": {
+          "x": -10.800346153846155,
+          "y": 8.499647058823529,
+          "z": 10.800192307692308
+        },
+        "targetM": {
+          "x": -0.0002692307692307693,
+          "y": 4.950294117647059,
+          "z": 0
+        },
+        "colorHex": "#92cfff",
+        "orientation": "portrait",
+        "rotationDeg": 90,
+        "raster": {
+          "widthPx": 1200,
+          "heightPx": 1920
+        },
+        "fovDeg": 39.49826923076923,
+        "enabled": true,
+        "brightness": 1,
+        "gamma": 2.2,
+        "blackLevel": 0.02,
+        "lensShift": {
+          "x": -0.0015384615384615387,
+          "y": -0.0023529411764705885
+        },
+        "warpCorners": [
+          {
+            "x": 0.03807692307692308,
+            "y": 0.04205882352941176
+          },
+          {
+            "x": 0.9592307692307692,
+            "y": 0.04294117647058823
+          },
+          {
+            "x": 0.9419230769230769,
+            "y": 0.9611764705882353
+          },
+          {
+            "x": 0.05576923076923077,
+            "y": 0.9420588235294117
+          }
+        ],
+        "blend": {
+          "left": 0.1008,
+          "right": 0.14,
+          "top": 0.1148,
+          "bottom": 0.11200000000000002
+        }
+      },
+      {
+        "id": "projector-2",
+        "label": "Front right",
+        "index": 1,
+        "positionM": {
+          "x": 10.800692307692309,
+          "y": 8.499823529411765,
+          "z": 10.799615384615386
+        },
+        "targetM": {
+          "x": 0.0005384615384615385,
+          "y": 4.9501470588235295,
+          "z": 0
+        },
+        "colorHex": "#e6b0ff",
+        "orientation": "portrait",
+        "rotationDeg": 90,
+        "raster": {
+          "widthPx": 1200,
+          "heightPx": 1920
+        },
+        "fovDeg": 39.503461538461536,
+        "enabled": true,
+        "brightness": 1,
+        "gamma": 2.2,
+        "blackLevel": 0.02,
+        "lensShift": {
+          "x": 0.0030769230769230774,
+          "y": -0.0011764705882352942
+        },
+        "warpCorners": [
+          {
+            "x": 0.04384615384615385,
+            "y": 0.04352941176470588
+          },
+          {
+            "x": 0.9615384615384615,
+            "y": 0.04147058823529412
+          },
+          {
+            "x": 0.9361538461538461,
+            "y": 0.9605882352941176
+          },
+          {
+            "x": 0.05346153846153846,
+            "y": 0.9435294117647058
+          }
+        ],
+        "blend": {
+          "left": 0.14,
+          "right": 0.1008,
+          "top": 0.1148,
+          "bottom": 0.11200000000000002
+        }
+      },
+      {
+        "id": "projector-3",
+        "label": "Rear left",
+        "index": 2,
+        "positionM": {
+          "x": -10.801038461538463,
+          "y": 8.5,
+          "z": -10.199423076923075
+        },
+        "targetM": {
+          "x": -0.0008076923076923078,
+          "y": 4.95,
+          "z": 0
+        },
+        "colorHex": "#9fffe0",
+        "orientation": "portrait",
+        "rotationDeg": 90,
+        "raster": {
+          "widthPx": 1200,
+          "heightPx": 1920
+        },
+        "fovDeg": 39.494807692307695,
+        "enabled": true,
+        "brightness": 1,
+        "gamma": 2.2,
+        "blackLevel": 0.02,
+        "lensShift": {
+          "x": -0.004615384615384616,
+          "y": 0
+        },
+        "warpCorners": [
+          {
+            "x": 0.03423076923076923,
+            "y": 0.045
+          },
+          {
+            "x": 0.9576923076923076,
+            "y": 0.04
+          },
+          {
+            "x": 0.9457692307692307,
+            "y": 0.96
+          },
+          {
+            "x": 0.05730769230769231,
+            "y": 0.945
+          }
+        ],
+        "blend": {
+          "left": 0.1008,
+          "right": 0.14,
+          "top": 0.1148,
+          "bottom": 0.11200000000000002
+        }
+      },
+      {
+        "id": "projector-4",
+        "label": "Rear right",
+        "index": 3,
+        "positionM": {
+          "x": 10.801384615384617,
+          "y": 8.500176470588235,
+          "z": -10.20076923076923
+        },
+        "targetM": {
+          "x": 0.001076923076923077,
+          "y": 4.949852941176471,
+          "z": 0
+        },
+        "colorHex": "#ffd1a0",
+        "orientation": "portrait",
+        "rotationDeg": 90,
+        "raster": {
+          "widthPx": 1200,
+          "heightPx": 1920
+        },
+        "fovDeg": 39.50692307692308,
+        "enabled": true,
+        "brightness": 1,
+        "gamma": 2.2,
+        "blackLevel": 0.02,
+        "lensShift": {
+          "x": 0.006153846153846155,
+          "y": 0.0011764705882352942
+        },
+        "warpCorners": [
+          {
+            "x": 0.047692307692307694,
+            "y": 0.04647058823529412
+          },
+          {
+            "x": 0.963076923076923,
+            "y": 0.03852941176470588
+          },
+          {
+            "x": 0.9323076923076923,
+            "y": 0.9594117647058823
+          },
+          {
+            "x": 0.051923076923076926,
+            "y": 0.9464705882352941
+          }
+        ],
+        "blend": {
+          "left": 0.14,
+          "right": 0.1008,
+          "top": 0.1148,
+          "bottom": 0.11200000000000002
+        }
+      },
+      {
+        "id": "projector-5",
+        "label": "Overhead",
+        "index": 4,
+        "positionM": {
+          "x": -0.0017307692307692308,
+          "y": 12.400352941176472,
+          "z": -1.3990384615384615
+        },
+        "targetM": {
+          "x": -0.0013461538461538463,
+          "y": 4.949705882352942,
+          "z": 0
+        },
+        "colorHex": "#fff3b0",
+        "orientation": "portrait",
+        "rotationDeg": 90,
+        "raster": {
+          "widthPx": 1200,
+          "heightPx": 1920
+        },
+        "fovDeg": 83.49134615384615,
+        "enabled": true,
+        "brightness": 1,
+        "gamma": 2.2,
+        "blackLevel": 0.02,
+        "lensShift": {
+          "x": -0.007692307692307693,
+          "y": 0.0023529411764705885
+        },
+        "warpCorners": [
+          {
+            "x": 0.030384615384615385,
+            "y": 0.07794117647058824
+          },
+          {
+            "x": 0.9561538461538461,
+            "y": 0.03705882352941177
+          },
+          {
+            "x": 0.9496153846153845,
+            "y": 0.9588235294117646
+          },
+          {
+            "x": 0.05884615384615385,
+            "y": 0.9479411764705882
+          }
+        ],
+        "blend": {
+          "left": 0.14,
+          "right": 0.14,
+          "top": 0.07700000000000001,
+          "bottom": 0.14
+        }
+      }
+    ],
+    "calibration": {
+      "state": "simulated",
+      "pattern": "seam",
+      "reprojectionErrorPx": 0.9,
+      "lastCalibratedAt": "2026-08-12T00:00:00.000Z"
+    }
+  },
+  "output": {
+    "projectorCount": 5,
+    "activeProjectorCount": 5,
+    "activeProjectorIndices": [
+      0,
+      1,
+      2,
+      3,
+      4
+    ],
+    "orientation": "portrait",
+    "projectorRaster": {
+      "widthPx": 1200,
+      "heightPx": 1920
+    },
+    "spanningRaster": {
+      "widthPx": 6000,
+      "heightPx": 1920
+    }
+  },
+  "safety": {
+    "previewExposure": 0.78,
+    "shaderLuminanceCeiling": 0.84,
+    "fanCommandsIncluded": false
+  }
+}

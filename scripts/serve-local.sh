@@ -10,4 +10,6 @@ if [[ -z "$npm_bin" || ! -x "$npm_bin" ]]; then
 fi
 
 cd "$project_dir"
-exec "$npm_bin" run dev
+# Everyday use: the stable build on port 4178 (npm run dev is the development copy on 4190).
+[[ -f dist/index.html ]] || "$npm_bin" run stable:publish
+exec "$npm_bin" run stable:serve

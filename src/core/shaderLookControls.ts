@@ -32,10 +32,10 @@ export const SHADER_LOOK_CONTROL_DEFINITIONS: readonly ShaderLookControlDefiniti
       id: "motion",
       label: "Animation speed",
       min: 0,
-      max: 2.5,
+      max: 4,
       step: 0.01,
-      defaultValue: 1,
-      description: "Global shader clock. Zero freezes the look, one is normal speed and 2.5 is fastest.",
+      defaultValue: 1.75,
+      description: "Global shader clock. The installation default is 1.75×, zero freezes the look and four is fastest.",
     },
     {
       id: "scale",

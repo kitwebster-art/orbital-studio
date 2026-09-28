@@ -85,7 +85,7 @@ export class RuntimeEngine {
 
   private readonly fanAdapter: FanTelemetryAdapter;
   private readonly projectionOutput: ProjectionOutputAdapter | null;
-  private readonly predictionHorizonMs: number;
+  private predictionHorizonMs: number;
   private trackingAdapter: TrackingAdapter;
   private forecasts: Forecast[] = [];
   private timeS = 0;
@@ -239,6 +239,12 @@ export class RuntimeEngine {
       throw new Error("fan cue override must be null or between 0 and 1");
     }
     this.fanCueOverride = cue;
+  }
+
+  setPredictionHorizonMs(ms: number): void {
+    if (!Number.isFinite(ms) || ms < 0 || ms > 100) throw new Error('Prediction horizon must be between 0 and 100 ms');
+    this.predictionHorizonMs = ms;
+    this.resetPredictor();
   }
 
   setPredictionEnabled(enabled: boolean): void {

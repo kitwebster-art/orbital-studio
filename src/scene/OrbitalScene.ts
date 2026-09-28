@@ -1,3 +1,8 @@
+import { parseTestRigSetup, applyTestRigToProjectionRig, applyTestRigPreview, testRigOverviewCamera, type TestRigSetup } from "../core/testRig";
+import { projectorWarpMatrix } from "../core/projectorWarp";
+import { projectionOutputBlockReason, type StructuredLightGateInput } from "../core/projectionOutputGate";
+import { orthoFramingForEllipse, type ImageEllipse } from "../core/scanMapping";
+import { OutputHold, ellipseEdgeNote } from "../core/outputHold";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
@@ -8,10 +13,25 @@ import type {
 } from "../core/contracts";
 import {
   DEFAULT_ENVIRONMENT_PREVIEW_CONTROLS,
-  fanSpeedToHoverOffsetM,
   normaliseEnvironmentPreviewControls,
   type EnvironmentPreviewControls,
 } from "../core/environmentPreview";
+import {
+  BernoulliAirJetModel,
+  type BernoulliBalloonState,
+} from "../core/bernoulliAirflow";
+import {
+  DEFAULT_BALLOON_PHYSICS_CONTROLS,
+  DEFAULT_PROJECTION_MATERIAL_CONTROLS,
+  normaliseBalloonPhysicsControls,
+  normaliseProjectionMaterialControls,
+  type BalloonPhysicsControls,
+  type ProjectionMaterialControls,
+} from "../core/balloonSurfaceControls";
+import {
+  analyseProjectionCoverage,
+  type ProjectionCoverageAnalysis,
+} from "../core/projectionCoverage";
 import {
   createDefaultSurfaceRegionAssignments,
   type MappingViewMode,
@@ -36,12 +56,39 @@ import {
 } from "../core/shaderLookControls";
 import {
   createDefaultProjectionRig,
+  PROJECTOR_RASTER_ASPECT,
+  PROJECTOR_RASTER_HEIGHT,
+  PROJECTOR_RASTER_WIDTH,
   toProjectorShaderInputs,
   validateProjectionRig,
   type ProjectionPattern,
   type ProjectionRigConfig,
 } from "../core/projectionRig";
 import { sampleMotion } from "../core/motionPreference";
+import {
+  DEFAULT_LIVING_SKIN_CONTROLS,
+  livingSkinSequenceModeIndex,
+  normaliseLivingSkinControls,
+  type LivingSkinControls,
+} from "../core/livingSkin";
+import {
+  SOCIAL_CAMERA_PRESETS,
+  type SocialCameraPreset,
+} from "../core/socialCapture";
+import {
+  DEFAULT_CINEMATIC_SCENE_CONTROLS,
+  normaliseCinematicSceneControls,
+  heldCameraTourPhase,
+  type CinematicSceneControls,
+} from "../core/cinematicScene";
+import {
+  DEFAULT_INSTALLATION_RIG_CONTROLS,
+  CAMERA_LENS_PRESETS,
+  NIR_ILLUMINATOR_PRESETS,
+  createInstallationHeadPlans,
+  normaliseInstallationRigControls,
+  type InstallationRigControls,
+} from "../core/installationRig";
 import {
   createOrbitalSurfaceMaterial,
   setOrbitalSurfaceLookControls,
@@ -62,6 +109,8 @@ const ROOM_DEPTH_M = 34;
 const DEFAULT_CENTER_M = new THREE.Vector3(0, 3.35, 0);
 const DEFAULT_RADII_M = new THREE.Vector3(2.5, 2.5, 2.5);
 const RESIDUAL_PARTICLE_COUNT = 28;
+const PROJECTOR_OUTPUT_WIDTH = PROJECTOR_RASTER_WIDTH;
+const PROJECTOR_OUTPUT_HEIGHT = PROJECTOR_RASTER_HEIGHT;
 
 export interface OrbitalDebugOptions {
   projectors: boolean;
@@ -82,7 +131,7 @@ export interface OrbitalDigitalTwinState {
   coordinateUnit: "metres";
   sceneScale: {
     roomM: Readonly<{ width: number; height: number; depth: number }>;
-    nominalSphereDiameterM: 5;
+    nominalSphereDiameterM: number;
   };
   limitations: readonly string[];
   lastRuntimeMode: RuntimeMode | null;
@@ -129,21 +178,52 @@ export class OrbitalScene {
   private readonly predictionGroup = new THREE.Group();
   private readonly speakerBodyGroup = new THREE.Group();
   private readonly speakerMeterGroup = new THREE.Group();
+  private readonly fanAssemblyGroup = new THREE.Group();
+  private readonly installationTrussGroup = new THREE.Group();
+  private readonly installationCameraGroup = new THREE.Group();
+  private readonly installationNirGroup = new THREE.Group();
 
   private readonly surfaceMaterial = createOrbitalSurfaceMaterial();
+  private readonly thumbnailMaterial = createOrbitalSurfaceMaterial();
+  private readonly thumbnailScene = new THREE.Scene();
+  private readonly thumbnailCamera = new THREE.PerspectiveCamera(34, 1.5, 0.1, 10);
+  private readonly thumbnailTarget = new THREE.WebGLRenderTarget(180, 120);
+  private readonly thumbnailPixels = new Uint8Array(180 * 120 * 4);
   private readonly predictionMaterial = createPredictionGhostMaterial();
   private readonly sphereMesh: THREE.Mesh;
+  private readonly sphereGlowMesh: THREE.Mesh;
+  private readonly sphereGlowMaterial = new THREE.MeshBasicMaterial({
+    color: 0x54cfff,
+    transparent: true,
+    opacity: 0,
+    side: THREE.BackSide,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false,
+  });
   private readonly projectorOutputSphere: THREE.Mesh;
   private readonly projectorOutputCameras: THREE.PerspectiveCamera[] = [];
-  private readonly projectorOutputTarget = new THREE.WebGLRenderTarget(640, 400, {
+  private readonly projectorOutputTarget = new THREE.WebGLRenderTarget(
+    PROJECTOR_OUTPUT_WIDTH,
+    PROJECTOR_OUTPUT_HEIGHT,
+    {
     depthBuffer: true,
     stencilBuffer: false,
-  });
-  private readonly projectorOutputPixels = new Uint8Array(640 * 400 * 4);
-  private readonly projectorOutputImage = new ImageData(640, 400);
+    },
+  );
+  private readonly projectorOutputPixels = new Uint8Array(
+    PROJECTOR_OUTPUT_WIDTH * PROJECTOR_OUTPUT_HEIGHT * 4,
+  );
+  private readonly projectorOutputImage = new ImageData(
+    PROJECTOR_OUTPUT_WIDTH,
+    PROJECTOR_OUTPUT_HEIGHT,
+  );
   private readonly projectorOutputCanvases: readonly HTMLCanvasElement[];
+  private readonly projectorWindowRenderers = new Map<HTMLCanvasElement, THREE.WebGLRenderer>();
   private readonly onProjectorOutputFrame?: (index: number) => void;
   private nextProjectorOutputIndex = 0;
+  private projectorOutputSequence = 0;
+  private projectorWindowOutputSequence = 0;
   private readonly predictionMesh: THREE.Mesh;
   private readonly residualLine: THREE.Line;
   private readonly residualLineGeometry: THREE.BufferGeometry;
@@ -162,6 +242,7 @@ export class OrbitalScene {
   private readonly warehouseLights: THREE.PointLight[] = [];
   private readonly warehouseFillLights: THREE.Light[] = [];
   private readonly warehouseEmissiveMaterials: THREE.MeshStandardMaterial[] = [];
+  private readonly warehouseConcreteMaterials: THREE.MeshStandardMaterial[] = [];
   private fanAirMaterial!: THREE.MeshBasicMaterial;
   private fanCoreMaterial!: THREE.MeshStandardMaterial;
   private readonly observedCenter = DEFAULT_CENTER_M.clone();
@@ -170,6 +251,29 @@ export class OrbitalScene {
   private readonly currentResidual = new THREE.Vector3();
   private readonly residualPerpendicular = new THREE.Vector3();
   private readonly workingVector = new THREE.Vector3();
+  private readonly bernoulliAirflow = new BernoulliAirJetModel();
+  private aerodynamicState: BernoulliBalloonState | null = null;
+  private coverageAnalysis: ProjectionCoverageAnalysis | null = null;
+  private balloonPhysicsControls: BalloonPhysicsControls = {
+    ...DEFAULT_BALLOON_PHYSICS_CONTROLS,
+  };
+  private projectionMaterialControls: ProjectionMaterialControls = {
+    ...DEFAULT_PROJECTION_MATERIAL_CONTROLS,
+  };
+  private livingSkinControls: LivingSkinControls = {
+    ...DEFAULT_LIVING_SKIN_CONTROLS,
+  };
+  private cinematicSceneControls: CinematicSceneControls = {
+    ...DEFAULT_CINEMATIC_SCENE_CONTROLS,
+  };
+  private installationRigControls: InstallationRigControls = {
+    ...DEFAULT_INSTALLATION_RIG_CONTROLS,
+  };
+  private cameraTourElapsedS = 0;
+  private cameraMoveElapsedS = 0;
+  private cameraMoveDurationS = 0;
+  private readonly cameraMoveFrom = new THREE.Vector3();
+  private readonly cameraMoveTo = new THREE.Vector3();
 
   private debugOptions: OrbitalDebugOptions = {
     projectors: true,
@@ -182,6 +286,7 @@ export class OrbitalScene {
   };
   private shaderElapsedS = 0;
   private shaderAnimationSpeed = DEFAULT_SHADER_LOOK_CONTROLS.motion;
+  private lastShaderClockAtMs = performance.now();
   private lastRuntimeMode: RuntimeMode | null = null;
   private lastTrackingStatus: TrackingStatus | null = null;
   private lastSequence: number | null = null;
@@ -202,6 +307,155 @@ export class OrbitalScene {
   private renderQuality: RenderQualityTier = "balanced";
   private reducedMotion = false;
   private disposed = false;
+  private testRigSetup: TestRigSetup | null = null;
+  private rigBeforeTest: ProjectionRigConfig | null = null;
+  private lightweightPreview = false;
+  private coverageDirty = true;
+
+  /**
+   * Lightweight preview keeps the control page cheap while the physical test
+   * bench or a projector output window needs the GPU: the five mapping-lab
+   * tiles are not re-rendered and coverage analysis only runs when the rig
+   * changes. The main viewport still renders whenever the caller asks.
+   */
+  public setLightweightPreview(active: boolean): void {
+    if (this.lightweightPreview === active) return;
+    this.lightweightPreview = active;
+    this.coverageDirty = true;
+    this.container.dataset.lightweightPreview = String(active);
+  }
+
+  public isLightweightPreview(): boolean {
+    return this.lightweightPreview;
+  }
+
+  /** Current output gate result for one projector head, null when output may show. */
+  public getOutputBlockReason(index = 0): string | null {
+    return this.outputBlockReason(index);
+  }
+
+  public clearTestRigSetup(): void {
+    if (!this.testRigSetup) return;
+    this.testRigSetup = null;
+    const restore = this.rigBeforeTest; this.rigBeforeTest = null;
+    if (restore) {
+      restore.calibration = { state: "uncalibrated", pattern: "authored", reprojectionErrorPx: null, lastCalibratedAt: null, calibratedProjectorIds: [], projectorErrorsPx: {} };
+      this.setProjectionRig(restore);
+    }
+    delete this.container.dataset.testRig;
+    this.setEnvironmentControls(this.environmentControls);
+    this.syncSceneVisibility();
+  }
+
+  private scanProjectorOverride: { lensShift: { x: number; y: number }; fovDeg: number | null } | null = null;
+  /** Lens shift (and field of view, when measured) for P1 from the active scan; null restores the rig's own. */
+  public setScanProjectorOverride(value: { lensShift: { x: number; y: number }; fovDeg: number | null } | null): void {
+    this.scanProjectorOverride = value;
+    if (this.testRigSetup) this.setTestRigSetup(this.testRigSetup, { refocus: false });
+  }
+
+  public setTestRigSetup(value: TestRigSetup, options: { refocus?: boolean } = {}): void {
+    const setup = parseTestRigSetup(value);
+    const refocus = options.refocus ?? true;
+    if (!this.testRigSetup) this.rigBeforeTest = structuredClone(this.projectionRig);
+    this.testRigSetup = setup;
+    this.installationRigControls = { ...this.installationRigControls, mode: "prototype-1", prototypeProjectorIndex: 0, showTruss: false, showCameras: true, showNir: false, hazeDensity: 0 };
+    this.cinematicSceneControls = { ...this.cinematicSceneControls, cameraTourEnabled: false };
+    this.cameraMoveDurationS = 0;
+    const rig = applyTestRigToProjectionRig(this.projectionRig, setup);
+    // A structured-light scan knows where the real projector's picture sits around the ball.
+    if (this.scanProjectorOverride && rig.projectors[0]) {
+      rig.projectors[0].lensShift = { ...this.scanProjectorOverride.lensShift };
+      if (this.scanProjectorOverride.fovDeg !== null) rig.projectors[0].fovDeg = this.scanProjectorOverride.fovDeg;
+    }
+    this.setProjectionRig(rig);
+    this.scene.fog = null;
+    this.mappingView = "sphere";
+    if (refocus || !this.container.dataset.testRigFocus) this.focusTestLayout();
+    this.container.dataset.testRig = "manual-stationary-preview";
+    this.container.dataset.ballDiameterM = String(setup.ballDiameterM);
+    this.container.dataset.testCameraPosition = JSON.stringify(setup.cameraPositionM);
+    this.container.dataset.testProjectorPosition = JSON.stringify(setup.projectorPositionM);
+    this.renderer.domElement.setAttribute("aria-label", `Orbital ${Math.round(setup.ballDiameterM * 100)} centimetre test ball with one camera and one projector, manual uncalibrated geometry`);
+    this.syncSceneVisibility();
+  }
+
+  public focusTestLayout(): void {
+    if (!this.testRigSetup) return;
+    const framing = testRigOverviewCamera(this.testRigSetup, Math.max(0.1, this.container.clientWidth / Math.max(1, this.container.clientHeight)));
+    this.mappingView = "sphere"; this.cameraMoveDurationS = 0;
+    this.camera.position.set(framing.position.x, framing.position.y, framing.position.z);
+    this.camera.fov = 45; this.camera.near = 0.01; this.camera.updateProjectionMatrix();
+    this.controls.target.set(framing.target.x, framing.target.y, framing.target.z);
+    this.controls.enabled = true; this.controls.minDistance = this.testRigSetup.ballDiameterM * 0.65;
+    this.controls.maxDistance = Math.max(30, this.camera.position.distanceTo(this.controls.target) * 5);
+    this.controls.update(); this.syncSceneVisibility();
+    this.container.dataset.testRigFocus = "layout";
+  }
+
+  public focusTestBall(): void {
+    if (!this.testRigSetup) return;
+    const setup = this.testRigSetup;
+    const halfVertical = THREE.MathUtils.degToRad(45 / 2);
+    const halfHorizontal = Math.atan(Math.tan(halfVertical) * this.camera.aspect);
+    const distance = setup.ballDiameterM / 2 / Math.sin(Math.min(halfVertical, halfHorizontal)) * 1.3;
+    this.mappingView = "sphere"; this.cameraMoveDurationS = 0;
+    this.controls.target.set(setup.ballCenterM.x, setup.ballCenterM.y, setup.ballCenterM.z);
+    this.camera.position.copy(this.controls.target).add(new THREE.Vector3(0.9, 0.5, 1.2).normalize().multiplyScalar(distance));
+    this.camera.fov = 45; this.camera.updateProjectionMatrix(); this.controls.enabled = true;
+    this.controls.update(); this.syncSceneVisibility();
+    this.container.dataset.testRigFocus = "ball";
+  }
+
+  private outputBlackout = false;
+  private outputWorldReceivedAtMs = 0;
+
+  private outputBlockReason(index = 0): string | null {
+    if (this.outputWorld?.mode === "live" && performance.now() - this.outputWorldReceivedAtMs + this.outputWorld.diagnostics.sourceAgeMs > 80) return "LIVE_TRACKING_EXPIRED";
+    const reason = projectionOutputBlockReason(this.outputBlackout, this.outputWorld, this.projectionRig, index, this.structuredLight);
+    if (reason || index !== 0 || !this.structuredLight?.active) return reason;
+    return this.structuredLight.blockReason?.() ?? null;
+  }
+
+  private structuredLight: (StructuredLightGateInput & { ellipse: () => ImageEllipse | null; blockReason?: () => string | null }) | null = null;
+  private readonly structuredLightCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.001, 100);
+
+  /**
+   * Structured-light 2D mapping mode for P1. `ellipse` returns the tracked ball
+   * outline already mapped into projector pixels, or null when unavailable.
+   */
+  private readonly structuredLightHold = new OutputHold();
+  private probeDark = false;
+  private probeDarkRenderedAtMs: number | null = null;
+  /** Black out the structured-light ball for the delay probe; the first black frame's draw time is kept. */
+  public setProbeDark(on: boolean): void { this.probeDark = on; if (on) this.probeDarkRenderedAtMs = null; }
+  public getProbeDarkRenderedAtMs(): number | null { return this.probeDarkRenderedAtMs; }
+  private projectedEdgeNote: string | null = null;
+  /** Plain-language note when the projected ball runs off the projector picture, else null. */
+  public getProjectedEdgeNote(): string | null { return this.projectedEdgeNote; }
+
+  public setStructuredLightOutput(state: (StructuredLightGateInput & { ellipse: () => ImageEllipse | null; blockReason?: () => string | null }) | null): void {
+    this.structuredLight = state;
+    this.container.dataset.outputCalibration = state?.active ? "structured-light" : "measured";
+  }
+  private outputWorld: RuntimeSnapshot["world"] | null = null;
+
+  public setOutputBlackout(blackout: boolean): void {
+    this.outputBlackout = blackout;
+    if (blackout) this.clearProjectorOutputs("OPERATOR_BLACKOUT");
+  }
+
+  private clearProjectorOutputs(reason: string): void {
+    for (const canvas of this.projectorOutputCanvases) {
+      const context = canvas.getContext("2d");
+      if (context) { context.save(); context.setTransform(1, 0, 0, 1, 0, 0); context.fillStyle = "#000"; context.fillRect(0, 0, canvas.width, canvas.height); context.restore(); }
+      canvas.dataset.outputBlockReason = reason;
+    }
+    for (const [canvas, renderer] of this.projectorWindowRenderers) {
+      renderer.setClearColor(0x000000, 1); renderer.clear(true, true, true);
+      canvas.dataset.outputBlockReason = reason;
+    }
+  }
 
   public constructor(container: HTMLElement, options: OrbitalSceneOptions = {}) {
     this.container = container;
@@ -234,6 +488,13 @@ export class OrbitalScene {
     );
     this.container.append(this.renderer.domElement);
 
+    this.thumbnailScene.background = new THREE.Color(0x020506);
+    this.thumbnailCamera.position.set(0, 0, 3.35);
+    this.thumbnailCamera.lookAt(0, 0, 0);
+    this.thumbnailScene.add(
+      new THREE.Mesh(new THREE.SphereGeometry(1, 64, 48), this.thumbnailMaterial),
+    );
+
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.target.set(0, 4.5, 0);
     this.controls.enableDamping = true;
@@ -257,8 +518,14 @@ export class OrbitalScene {
     this.sphereMesh.position.copy(DEFAULT_CENTER_M);
     this.sphereMesh.frustumCulled = false;
     this.scene.add(this.sphereMesh);
+    this.sphereGlowMesh = new THREE.Mesh(sphereGeometry.clone(), this.sphereGlowMaterial);
+    this.sphereGlowMesh.name = "Optional cinematic sphere glow";
+    this.sphereGlowMesh.renderOrder = -1;
+    this.scene.add(this.sphereGlowMesh);
     this.projectorOutputScene.background = new THREE.Color(0x000000);
-    this.projectorOutputSphere = new THREE.Mesh(sphereGeometry, this.surfaceMaterial);
+    // Output windows render at native projector raster every frame; 64x48 is
+    // visually identical on a projected silhouette and far cheaper than 112x80.
+    this.projectorOutputSphere = new THREE.Mesh(new THREE.SphereGeometry(1, 64, 48), this.surfaceMaterial);
     this.projectorOutputSphere.name = "Projector raster surface";
     this.projectorOutputSphere.position.copy(DEFAULT_CENTER_M);
     this.projectorOutputSphere.frustumCulled = false;
@@ -330,14 +597,22 @@ export class OrbitalScene {
       this.projectorLightGroup,
       this.projectorTargetGroup,
       this.predictionGroup,
+      this.fanAssemblyGroup,
+      this.installationTrussGroup,
+      this.installationCameraGroup,
+      this.installationNirGroup,
       this.speakerBodyGroup,
       this.speakerMeterGroup,
     );
     this.buildProjectors();
+    this.buildInstallationSupportRig();
     this.buildSpeakers();
     this.setSurfaceRegions(this.surfaceRegions);
+    this.setLivingSkinControls(this.livingSkinControls);
     this.setDebugOptions(this.debugOptions);
     this.setEnvironmentControls(this.environmentControls);
+    this.setCinematicSceneControls(this.cinematicSceneControls);
+    this.setInstallationRigControls(this.installationRigControls);
 
     this.resize();
     this.resizeObserver =
@@ -348,45 +623,72 @@ export class OrbitalScene {
     this.renderer.render(this.scene, this.camera);
   }
 
-  public update(snapshot: RuntimeSnapshot, deltaS: number): void {
+  public update(
+    snapshot: RuntimeSnapshot,
+    deltaS: number,
+    renderDashboard = true,
+  ): void {
     if (this.disposed) {
       return;
     }
 
+    if (this.testRigSetup) snapshot = { ...snapshot, world: applyTestRigPreview(snapshot.world, this.testRigSetup) };
+    this.outputWorld = snapshot.world;
+    this.outputWorldReceivedAtMs = performance.now();
+    const outputBlock = this.outputBlockReason();
+    if (outputBlock && !["SELECTED_PROJECTOR_NOT_CALIBRATED", "PROJECTOR_REPROJECTION_ERROR_EXCEEDS_2PX"].includes(outputBlock)) this.clearProjectorOutputs(outputBlock);
     const safeDeltaS = THREE.MathUtils.clamp(deltaS, 0, 0.1);
     const motion = sampleMotion(snapshot.showTimeS, safeDeltaS, this.reducedMotion);
-    // Shader audition has its own clock so procedural looks remain animated
-    // while the long-form show transport is stopped. Reduced-motion still
-    // freezes this clock through sampleMotion's zero delta.
-    this.shaderElapsedS = advanceShaderAnimationTime(
-      this.shaderElapsedS,
-      motion.deltaS,
-      this.shaderAnimationSpeed,
-    );
-    this.container.dataset.shaderAnimationTime = this.shaderElapsedS.toFixed(3);
-    this.container.dataset.shaderAnimationSpeed = this.shaderAnimationSpeed.toFixed(2);
+    // The shader clock can also be advanced by a visible projector window.
+    // This prevents fullscreen from depending on the throttled control-page
+    // requestAnimationFrame loop.
+    this.advanceShaderClock(performance.now());
     this.lastRuntimeMode = snapshot.world.mode;
     this.lastTrackingStatus = snapshot.world.status;
     this.lastSequence = snapshot.world.sequence;
     const fanSpeed = clamp01(snapshot.fan.actualNormalized);
-    const syntheticLiftM =
-      snapshot.world.mode === "simulation"
-        ? fanSpeedToHoverOffsetM(fanSpeed)
-        : 0;
+    const airflowState = snapshot.world.mode === "simulation" && !this.testRigSetup
+      ? this.bernoulliAirflow.step(
+          fanSpeed,
+          this.reducedMotion ? 0 : safeDeltaS,
+          this.shaderElapsedS,
+          this.balloonPhysicsControls,
+        )
+      : null;
+    this.aerodynamicState = airflowState;
+    this.container.dataset.aerodynamicModel = airflowState
+      ? "bernoulli-air-jet"
+      : this.testRigSetup && snapshot.world.mode === "simulation" ? "stationary-test-rig-preview" : "measured-tracking";
+    if (airflowState) {
+      this.container.dataset.flowAttachment = airflowState.flowAttachment.toFixed(3);
+      this.container.dataset.airflowLateralOffsetM = Math.hypot(
+        airflowState.offsetM.x,
+        airflowState.offsetM.z,
+      ).toFixed(3);
+      this.container.dataset.airflowHoverOffsetM = airflowState.offsetM.y.toFixed(3);
+    }
 
     if (snapshot.world.centerM !== null) {
-      this.observedCenter.set(
-        snapshot.world.centerM.x,
-        snapshot.world.centerM.y + syntheticLiftM,
-        snapshot.world.centerM.z,
-      );
+      if (airflowState) {
+        this.observedCenter.set(
+          airflowState.offsetM.x,
+          DEFAULT_CENTER_M.y + airflowState.offsetM.y,
+          airflowState.offsetM.z,
+        );
+      } else {
+        this.observedCenter.set(
+          snapshot.world.centerM.x,
+          snapshot.world.centerM.y,
+          snapshot.world.centerM.z,
+        );
+      }
     }
     this.predictedCenter.copy(this.observedCenter);
     if (snapshot.world.prediction !== null) {
       this.predictedCenter.set(
-        snapshot.world.prediction.predictedCenterM.x,
-        snapshot.world.prediction.predictedCenterM.y + syntheticLiftM,
-        snapshot.world.prediction.predictedCenterM.z,
+        airflowState ? airflowState.offsetM.x : snapshot.world.prediction.predictedCenterM.x,
+        snapshot.world.prediction.predictedCenterM.y + (airflowState?.offsetM.y ?? 0),
+        airflowState ? airflowState.offsetM.z : snapshot.world.prediction.predictedCenterM.z,
       );
       this.currentResidual.set(
         snapshot.world.prediction.residualM.x,
@@ -398,31 +700,59 @@ export class OrbitalScene {
     }
 
     if (snapshot.world.shape !== null) {
-      this.currentRadii.set(
-        safeRadius(snapshot.world.shape.radiiM.x),
-        safeRadius(snapshot.world.shape.radiiM.y),
-        safeRadius(snapshot.world.shape.radiiM.z),
-      );
+      if (airflowState) {
+        this.currentRadii.set(
+          DEFAULT_RADII_M.x * airflowState.radiiScale.x,
+          DEFAULT_RADII_M.y * airflowState.radiiScale.y,
+          DEFAULT_RADII_M.z * airflowState.radiiScale.z,
+        );
+      } else {
+        this.currentRadii.set(
+          (snapshot.world.mode === "live" || this.testRigSetup) ? snapshot.world.shape.radiiM.x : safeRadius(snapshot.world.shape.radiiM.x),
+          (snapshot.world.mode === "live" || this.testRigSetup) ? snapshot.world.shape.radiiM.y : safeRadius(snapshot.world.shape.radiiM.y),
+          (snapshot.world.mode === "live" || this.testRigSetup) ? snapshot.world.shape.radiiM.z : safeRadius(snapshot.world.shape.radiiM.z),
+        );
+      }
     } else {
       this.currentRadii.copy(DEFAULT_RADII_M);
+    }
+    if (this.coverageDirty || (!this.lightweightPreview && renderDashboard) || !this.coverageAnalysis) {
+      this.coverageAnalysis = analyseProjectionCoverage(
+        this.projectionRig,
+        this.observedCenter,
+        this.currentRadii,
+      );
+      this.coverageDirty = false;
+      this.container.dataset.projectionCoverage = this.coverageAnalysis.overallPercent.toFixed(1);
+      this.container.dataset.projectionCoverageStatus = this.coverageAnalysis.status;
     }
 
     const shape = snapshot.world.shape;
     const prediction = snapshot.world.prediction;
     const principalAxisRad = THREE.MathUtils.degToRad(
-      shape?.principalAxisDeg ?? 0,
+      (shape?.principalAxisDeg ?? 0) + (airflowState?.principalAxisOffsetDeg ?? 0),
     );
     const confidence = THREE.MathUtils.clamp(snapshot.world.confidence, 0, 1);
 
     this.sphereMesh.position.copy(this.observedCenter);
+    this.sphereGlowMesh.position.copy(this.observedCenter);
+    this.sphereGlowMesh.scale.set(
+      this.currentRadii.x * 1.035,
+      this.currentRadii.y * 1.035,
+      this.currentRadii.z * 1.035,
+    );
     updateOrbitalSurfaceMaterial(this.surfaceMaterial, {
       timeS: this.shaderElapsedS,
       centerM: this.observedCenter,
       radiiM: this.currentRadii,
       principalAxisRad,
-      wobble: THREE.MathUtils.clamp(shape?.wobble ?? 0, 0, 1),
+      wobble: THREE.MathUtils.clamp(
+        airflowState?.wobble ?? shape?.wobble ?? 0,
+        0,
+        1,
+      ),
       deformationRate: THREE.MathUtils.clamp(
-        Math.abs(shape?.deformationRate ?? 0),
+        Math.abs(airflowState?.deformationRate ?? shape?.deformationRate ?? 0),
         0,
         1,
       ),
@@ -458,6 +788,12 @@ export class OrbitalScene {
     this.surfaceMaterial.uniforms.uGlitch.value = clamp01(
       snapshot.audiovisual.glitch * 0.82 + this.shaderControl * 0.18,
     );
+    this.surfaceMaterial.uniforms.uLowerBulge.value = this.balloonPhysicsControls.lowerBulge;
+    this.surfaceMaterial.uniforms.uAsymmetry.value = this.balloonPhysicsControls.asymmetry;
+    this.surfaceMaterial.uniforms.uMaterialReflectance.value = this.projectionMaterialControls.reflectance;
+    this.surfaceMaterial.uniforms.uMaterialTranslucency.value = this.projectionMaterialControls.translucency;
+    this.surfaceMaterial.uniforms.uMaterialInternalBleed.value = this.projectionMaterialControls.internalBleed;
+    this.surfaceMaterial.uniforms.uMaterialRoughness.value = this.projectionMaterialControls.roughness;
 
     this.predictionMesh.position.copy(this.predictedCenter);
     updatePredictionGhostMaterial(this.predictionMaterial, {
@@ -496,9 +832,12 @@ export class OrbitalScene {
 
     this.updateProjectors(snapshot, motion.timeS);
     this.updateSpeakers(snapshot.quadLevels);
-    this.controls.update();
-    this.renderer.render(this.scene, this.camera);
-    this.renderNextProjectorOutput();
+    if (renderDashboard) {
+      this.updateCameraTour(safeDeltaS);
+      if (!this.cinematicSceneControls.cameraTourEnabled && this.cameraMoveDurationS <= 0) this.controls.update();
+      this.renderer.render(this.scene, this.camera);
+      if (!this.lightweightPreview) this.renderNextProjectorOutput();
+    }
   }
 
   public setDebugOptions(options: Partial<OrbitalDebugOptions>): void {
@@ -506,16 +845,360 @@ export class OrbitalScene {
       ...this.debugOptions,
       ...options,
     };
-    this.projectorDebugGroup.visible =
-      this.mappingView === "sphere" && this.debugOptions.projectors;
+    this.syncSceneVisibility();
     this.predictionGroup.visible =
       this.debugOptions.prediction && this.predictionAvailable;
-    this.speakerMeterGroup.visible = this.debugOptions.speakers;
-    this.roomGroup.visible = this.debugOptions.room;
+  }
+
+  public setCinematicSceneControls(controls: Partial<CinematicSceneControls>): void {
+    const previousTour = this.cinematicSceneControls.cameraTourEnabled;
+    this.cinematicSceneControls = normaliseCinematicSceneControls({
+      ...this.cinematicSceneControls,
+      ...controls,
+    });
+    if (!previousTour && this.cinematicSceneControls.cameraTourEnabled) {
+      this.cameraTourElapsedS = 0;
+    }
+    this.controls.enabled = !this.cinematicSceneControls.cameraTourEnabled;
+    this.syncSceneVisibility();
+  }
+
+  private syncSceneVisibility(): void {
+    const inspectingOutput = this.mappingView !== "sphere";
+    this.projectorBodyGroup.visible = !inspectingOutput && this.cinematicSceneControls.projectorBodies;
+    this.projectorLightGroup.visible = !inspectingOutput && this.cinematicSceneControls.projectorThrows;
+    this.projectorTargetGroup.visible = !inspectingOutput && this.cinematicSceneControls.technicalGuides;
+    this.projectorDebugGroup.visible = !inspectingOutput &&
+      this.cinematicSceneControls.technicalGuides && this.debugOptions.projectors;
+    this.fanAssemblyGroup.visible = !this.testRigSetup && !inspectingOutput && this.cinematicSceneControls.fanRig;
+    this.speakerBodyGroup.visible = !this.testRigSetup && !inspectingOutput && this.cinematicSceneControls.speakerRig;
+    this.speakerMeterGroup.visible = !this.testRigSetup && !inspectingOutput && this.cinematicSceneControls.speakerRig && this.debugOptions.speakers;
+    this.roomGroup.visible = !this.testRigSetup && this.cinematicSceneControls.roomArchitecture && this.debugOptions.room;
+    this.installationTrussGroup.visible = !inspectingOutput && this.installationRigControls.showTruss;
+    this.installationCameraGroup.visible = !inspectingOutput && this.installationRigControls.showCameras;
+    this.installationNirGroup.visible = !inspectingOutput && this.installationRigControls.showNir;
+    if (this.testRigSetup) { this.warehouseGroup.visible = false; this.peopleGroup.visible = false; }
+    this.container.dataset.projectorBodies = String(this.projectorBodyGroup.visible);
+    this.container.dataset.projectorThrows = String(this.projectorLightGroup.visible);
+    this.container.dataset.technicalGuides = String(this.projectorDebugGroup.visible);
+    this.container.dataset.fanRig = String(this.fanAssemblyGroup.visible);
+    this.container.dataset.speakerRig = String(this.speakerBodyGroup.visible);
+    this.container.dataset.installationMode = this.installationRigControls.mode;
+    this.container.dataset.hazeDensity = this.installationRigControls.hazeDensity.toFixed(2);
+  }
+
+  public setInstallationRigControls(controls: Partial<InstallationRigControls>): void {
+    if (this.testRigSetup && controls.mode === "production-5") this.clearTestRigSetup();
+    if (this.testRigSetup) return;
+    this.installationRigControls = normaliseInstallationRigControls({
+      ...this.installationRigControls,
+      ...controls,
+    });
+    const plans = createInstallationHeadPlans(this.projectionRig, this.installationRigControls);
+    plans.forEach((plan) => {
+      this.projectionRig.projectors[plan.projectorIndex]!.enabled = plan.active;
+    });
+    this.scene.fog = new THREE.FogExp2(
+      new THREE.Color(0x030607),
+      0.004 + this.installationRigControls.hazeDensity * 0.052,
+    );
+    this.rebuildProjectors();
+    this.buildInstallationSupportRig();
+    this.syncSceneVisibility();
+  }
+
+  private updateCameraTour(deltaS: number): void {
+    if (this.testRigSetup) this.cinematicSceneControls.cameraTourEnabled = false;
+    if (!this.cinematicSceneControls.cameraTourEnabled) {
+      this.updateCameraMove(deltaS);
+      return;
+    }
+    this.cameraTourElapsedS += deltaS;
+    const route = [
+      this.cinematicSceneControls.cameraA,
+      this.cinematicSceneControls.cameraB,
+      this.cinematicSceneControls.cameraC,
+    ] as const;
+    const phase = heldCameraTourPhase(
+      this.cameraTourElapsedS,
+      this.cinematicSceneControls.transitionSeconds,
+      this.cinematicSceneControls.holdSeconds,
+    );
+    const target = this.sphereMesh.position;
+    const from = SOCIAL_CAMERA_PRESETS[route[phase.fromIndex]];
+    const to = SOCIAL_CAMERA_PRESETS[route[phase.toIndex]];
+    const fromPosition = new THREE.Vector3(...from.direction)
+      .normalize().multiplyScalar(from.distance).add(target);
+    const toPosition = new THREE.Vector3(...to.direction)
+      .normalize().multiplyScalar(to.distance).add(target);
+    this.camera.position.lerpVectors(fromPosition, toPosition, phase.mix);
+    this.container.dataset.cameraTourSegment = `${phase.fromIndex}-${phase.toIndex}`;
+    this.container.dataset.cameraTourMix = phase.mix.toFixed(3);
+    this.controls.target.lerp(target, 0.08);
+    this.camera.lookAt(this.controls.target);
+  }
+
+  public focusCameraPreset(presetId: SocialCameraPreset, durationS = 1.6): void {
+    const preset = SOCIAL_CAMERA_PRESETS[presetId];
+    this.cinematicSceneControls.cameraTourEnabled = false;
+    this.controls.enabled = false;
+    this.cameraMoveFrom.copy(this.camera.position);
+    this.cameraMoveTo.copy(new THREE.Vector3(...preset.direction)
+      .normalize().multiplyScalar(this.testRigSetup ? Math.max(this.testRigSetup.ballDiameterM * 2.5, 0.5) : preset.distance).add(this.sphereMesh.position));
+    this.cameraMoveElapsedS = 0;
+    this.cameraMoveDurationS = THREE.MathUtils.clamp(durationS, 0.4, 4);
+  }
+
+  private updateCameraMove(deltaS: number): void {
+    if (this.cameraMoveDurationS <= 0) return;
+    this.cameraMoveElapsedS += deltaS;
+    const raw = THREE.MathUtils.clamp(this.cameraMoveElapsedS / this.cameraMoveDurationS, 0, 1);
+    const eased = raw * raw * (3 - 2 * raw);
+    this.camera.position.lerpVectors(this.cameraMoveFrom, this.cameraMoveTo, eased);
+    this.controls.target.lerp(this.sphereMesh.position, 0.12);
+    this.camera.lookAt(this.controls.target);
+    if (raw >= 1) {
+      this.cameraMoveDurationS = 0;
+      this.controls.enabled = true;
+    }
   }
 
   public setReducedMotion(reducedMotion: boolean): void {
     this.reducedMotion = reducedMotion;
+  }
+
+  public setBalloonPhysicsControls(controls: Partial<BalloonPhysicsControls>): void {
+    this.balloonPhysicsControls = normaliseBalloonPhysicsControls(controls);
+  }
+
+  public setProjectionMaterialControls(controls: Partial<ProjectionMaterialControls>): void {
+    this.projectionMaterialControls = normaliseProjectionMaterialControls(controls);
+  }
+
+  public setLivingSkinControls(controls: Partial<LivingSkinControls>): void {
+    this.livingSkinControls = normaliseLivingSkinControls({
+      ...this.livingSkinControls,
+      ...controls,
+    });
+    const uniforms = this.surfaceMaterial.uniforms;
+    uniforms.uLivingSkinsEnabled.value = this.livingSkinControls.enabled ? 1 : 0;
+    uniforms.uLivingSkinPatchCount.value = this.livingSkinControls.patchCount;
+    uniforms.uLivingSkinVariety.value = this.livingSkinControls.variety;
+    uniforms.uLivingSkinGlitch.value = this.livingSkinControls.glitch;
+    uniforms.uLivingSkinFlashRate.value = this.livingSkinControls.flashRate;
+    uniforms.uLivingSkinSequenceMode.value = livingSkinSequenceModeIndex(this.livingSkinControls.sequenceMode);
+    uniforms.uLivingSkinEventHold.value = this.livingSkinControls.eventHold;
+    uniforms.uLivingSkinAttackSharpness.value = this.livingSkinControls.attackSharpness;
+    uniforms.uLivingSkinBreath.value = this.livingSkinControls.breath;
+    uniforms.uLivingSkinEdgeSoftness.value = this.livingSkinControls.edgeSoftness;
+    uniforms.uLivingSkinBpm.value = this.livingSkinControls.bpm;
+    uniforms.uLivingSkinPhraseEvolution.value = this.livingSkinControls.phraseEvolution;
+    uniforms.uBeautyLighting.value = this.livingSkinControls.beautyLighting;
+    uniforms.uSphereGlow.value = this.livingSkinControls.glow;
+    this.sphereGlowMaterial.opacity = this.livingSkinControls.glow * 0.14;
+    this.sphereGlowMaterial.visible = this.livingSkinControls.glow > 0.005;
+  }
+
+  private createSocialCamera(
+    width: number,
+    height: number,
+    presetId: SocialCameraPreset,
+  ): THREE.PerspectiveCamera {
+    const preset = SOCIAL_CAMERA_PRESETS[presetId];
+    const target = this.sphereMesh.position.clone();
+    const direction = new THREE.Vector3(...preset.direction).normalize();
+    const camera = new THREE.PerspectiveCamera(
+      height > width ? 48 : 42,
+      width / height,
+      0.08,
+      100,
+    );
+    camera.position.copy(target).addScaledVector(direction, preset.distance);
+    camera.lookAt(target);
+    camera.updateProjectionMatrix();
+    return camera;
+  }
+
+  private applyTourToCamera(camera: THREE.PerspectiveCamera, elapsedS: number): void {
+    const route = [
+      this.cinematicSceneControls.cameraA,
+      this.cinematicSceneControls.cameraB,
+      this.cinematicSceneControls.cameraC,
+    ] as const;
+    const phase = heldCameraTourPhase(
+      elapsedS,
+      this.cinematicSceneControls.transitionSeconds,
+      this.cinematicSceneControls.holdSeconds,
+    );
+    const target = this.sphereMesh.position;
+    const from = SOCIAL_CAMERA_PRESETS[route[phase.fromIndex]];
+    const to = SOCIAL_CAMERA_PRESETS[route[phase.toIndex]];
+    const fromPosition = new THREE.Vector3(...from.direction)
+      .normalize().multiplyScalar(from.distance).add(target);
+    const toPosition = new THREE.Vector3(...to.direction)
+      .normalize().multiplyScalar(to.distance).add(target);
+    camera.position.lerpVectors(fromPosition, toPosition, phase.mix);
+    camera.lookAt(target);
+  }
+
+  public async captureSocialStill(
+    width: number,
+    height: number,
+    cameraPreset: SocialCameraPreset,
+  ): Promise<Blob> {
+    const canvas = document.createElement("canvas");
+    const outputRenderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: false,
+      powerPreference: "high-performance",
+      preserveDrawingBuffer: true,
+    });
+    outputRenderer.outputColorSpace = THREE.SRGBColorSpace;
+    outputRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+    outputRenderer.toneMappingExposure = 1.06;
+    outputRenderer.shadowMap.enabled = true;
+    outputRenderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    outputRenderer.setPixelRatio(1);
+    outputRenderer.setSize(width, height, false);
+    outputRenderer.render(this.scene, this.createSocialCamera(width, height, cameraPreset));
+    const blob = await new Promise<Blob>((resolve, reject) => {
+      canvas.toBlob(
+        (value) => value ? resolve(value) : reject(new Error("Social still encoding failed")),
+        "image/png",
+      );
+    });
+    outputRenderer.dispose();
+    return blob;
+  }
+
+  public async recordSocialClip(
+    width: number,
+    height: number,
+    cameraPreset: SocialCameraPreset,
+    durationS = 6,
+    fps = 30,
+  ): Promise<Blob> {
+    if (typeof MediaRecorder === "undefined") {
+      throw new Error("This browser does not support local social clip recording");
+    }
+    const canvas = document.createElement("canvas");
+    const outputRenderer = new THREE.WebGLRenderer({
+      canvas,
+      antialias: true,
+      alpha: false,
+      powerPreference: "high-performance",
+    });
+    outputRenderer.outputColorSpace = THREE.SRGBColorSpace;
+    outputRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+    outputRenderer.toneMappingExposure = 1.06;
+    outputRenderer.shadowMap.enabled = true;
+    outputRenderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    outputRenderer.setPixelRatio(1);
+    outputRenderer.setSize(width, height, false);
+    const camera = this.createSocialCamera(width, height, cameraPreset);
+    const stream = canvas.captureStream(fps);
+    const mimeType = MediaRecorder.isTypeSupported("video/webm;codecs=vp9")
+      ? "video/webm;codecs=vp9"
+      : "video/webm";
+    const recorder = new MediaRecorder(stream, {
+      mimeType,
+      videoBitsPerSecond: 14_000_000,
+    });
+    const chunks: BlobPart[] = [];
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) chunks.push(event.data);
+    };
+    const finished = new Promise<Blob>((resolve, reject) => {
+      recorder.onerror = () => reject(new Error("Social clip recording failed"));
+      recorder.onstop = () => resolve(new Blob(chunks, { type: "video/webm" }));
+    });
+    recorder.start(250);
+    const startedAt = performance.now();
+    await new Promise<void>((resolve) => {
+      const renderFrame = (): void => {
+        if (this.cinematicSceneControls.cameraTourEnabled) {
+          this.applyTourToCamera(camera, (performance.now() - startedAt) / 1000);
+        }
+        outputRenderer.render(this.scene, camera);
+        if (performance.now() - startedAt >= durationS * 1000) {
+          resolve();
+        } else {
+          requestAnimationFrame(renderFrame);
+        }
+      };
+      renderFrame();
+    });
+    recorder.stop();
+    const blob = await finished;
+    stream.getTracks().forEach((track) => track.stop());
+    outputRenderer.dispose();
+    return blob;
+  }
+
+  public getProjectionCoverage(): Readonly<ProjectionCoverageAnalysis> | null {
+    return this.coverageAnalysis;
+  }
+
+  public renderShaderThumbnail(preset: ShaderPreset, canvas: HTMLCanvasElement): void {
+    const shader = getShaderDefinition(preset.shaderId);
+    const numericValues = Object.values(preset.parameters).filter(
+      (value): value is number => typeof value === "number",
+    );
+    const uniforms = this.thumbnailMaterial.uniforms;
+    uniforms.uShaderMode.value = shader ? shaderRenderModeIndex(shader.id) : 0;
+    uniforms.uShaderSeed.value = deriveDeterministicShaderSeed(preset.shaderId, preset.seed) / 4294967296;
+    uniforms.uShaderParamA.value = numericValues[0] ?? 0.5;
+    uniforms.uShaderParamB.value = numericValues[1] ?? 0.5;
+    uniforms.uShaderParamC.value = numericValues[2] ?? 0.5;
+    uniforms.uShaderParamD.value = numericValues[3] ?? 0.5;
+    uniforms.uShaderParamE.value = numericValues[4] ?? 0.5;
+    uniforms.uTime.value = 2.1 + (preset.seed % 17) * 0.13;
+    (uniforms.uCenter.value as THREE.Vector3).set(0, 0, 0);
+    (uniforms.uRadii.value as THREE.Vector3).set(1, 1, 1);
+    uniforms.uWobble.value = 0.09;
+    uniforms.uDeformationRate.value = 0.04;
+    uniforms.uEnergy.value = 0.58;
+    uniforms.uBrightness.value = 0.7;
+    uniforms.uDensity.value = 0.5;
+    uniforms.uFluidity.value = 0.55;
+    uniforms.uOrganic.value = 0.58;
+    uniforms.uMelody.value = 0.3;
+    uniforms.uTrackingConfidence.value = 1;
+    uniforms.uStateValid.value = 1;
+    uniforms.uPreviewExposure.value = 0.82;
+    uniforms.uProjectionPattern.value = 0;
+    uniforms.uOutputPreviewMode.value = 0;
+    uniforms.uLookScale.value = 1;
+    uniforms.uLookRotation.value = 0;
+    uniforms.uLookHue.value = 0;
+    uniforms.uLookSaturation.value = 1;
+    uniforms.uLookContrast.value = 1.12;
+    uniforms.uLookSoftness.value = 0.48;
+    uniforms.uLookLevel.value = 1.1;
+    uniforms.uLowerBulge.value = 0.5;
+    uniforms.uAsymmetry.value = 0.5;
+    (uniforms.uRegionIntensities.value as Float32Array).fill(0);
+    const previousTarget = this.renderer.getRenderTarget();
+    const previousClearColour = this.renderer.getClearColor(new THREE.Color()).clone();
+    const previousClearAlpha = this.renderer.getClearAlpha();
+    this.renderer.setRenderTarget(this.thumbnailTarget);
+    this.renderer.setClearColor(0x020506, 1);
+    this.renderer.render(this.thumbnailScene, this.thumbnailCamera);
+    this.renderer.readRenderTargetPixels(this.thumbnailTarget, 0, 0, 180, 120, this.thumbnailPixels);
+    this.renderer.setRenderTarget(previousTarget);
+    this.renderer.setClearColor(previousClearColour, previousClearAlpha);
+    const context = canvas.getContext("2d", { alpha: false });
+    if (!context) return;
+    canvas.width = 180;
+    canvas.height = 120;
+    const image = context.createImageData(180, 120);
+    for (let y = 0; y < 120; y += 1) {
+      const source = (119 - y) * 180 * 4;
+      image.data.set(this.thumbnailPixels.subarray(source, source + 180 * 4), y * 180 * 4);
+    }
+    context.putImageData(image, 0, 0);
+    canvas.dataset.rendered = "true";
   }
 
   public setEnvironmentControls(
@@ -525,19 +1208,36 @@ export class OrbitalScene {
       ...this.environmentControls,
       ...controls,
     });
-    this.warehouseGroup.visible = this.environmentControls.warehouseEnabled;
+    this.warehouseGroup.visible = !this.testRigSetup && this.environmentControls.warehouseEnabled;
     this.peopleGroup.visible =
-      this.environmentControls.warehouseEnabled &&
+      !this.testRigSetup && this.environmentControls.warehouseEnabled &&
       this.environmentControls.peopleEnabled;
     const light = this.environmentControls.lighting;
+    const warmth = this.environmentControls.warmth;
     this.warehouseLights.forEach((source, index) => {
       source.intensity = (index === 1 ? 78 : 62) * (0.22 + light * 0.78);
     });
     this.warehouseFillLights.forEach((source, index) => {
       source.intensity = (index === 0 ? 0.36 : 0.48) + light * 0.66;
+      source.color.lerpColors(
+        new THREE.Color(0x9ebad1),
+        new THREE.Color(0xffba78),
+        warmth,
+      );
     });
     this.warehouseEmissiveMaterials.forEach((material) => {
       material.emissiveIntensity = 0.25 + light * 1.35;
+      material.emissive.lerpColors(
+        new THREE.Color(0x82b5ce),
+        new THREE.Color(0xffbd7c),
+        warmth,
+      );
+    });
+    this.warehouseConcreteMaterials.forEach((material, index) => {
+      const patina = this.environmentControls.concretePatina;
+      material.roughness = 0.68 + patina * 0.28;
+      material.color.setHSL(0.085 - warmth * 0.035, 0.04 + patina * 0.055, 0.21 + index * 0.025);
+      material.bumpScale = 0.025 + patina * 0.065;
     });
     this.renderer.toneMappingExposure = 0.72 + light * 0.42;
   }
@@ -581,21 +1281,24 @@ export class OrbitalScene {
     } else if (view === "uv") {
       // This is an honest front-on coverage proxy until a calibrated UV atlas
       // renderer exists. It does not pretend to be a projector-ready unwrap.
-      this.camera.position.set(0, 3.35, 15.8);
-      this.controls.target.set(0, 3.35, 0);
+      if (this.testRigSetup) {
+        const center = this.testRigSetup.ballCenterM;
+        this.camera.position.set(center.x, center.y, center.z + Math.max(0.4, this.testRigSetup.ballDiameterM * 2.5));
+        this.controls.target.set(center.x, center.y, center.z);
+      } else {
+        this.camera.position.set(0, 3.35, 15.8);
+        this.controls.target.set(0, 3.35, 0);
+      }
       this.camera.fov = 34;
+    } else if (this.testRigSetup) {
+      this.focusTestLayout();
     } else {
       this.camera.position.set(10.8, 7.1, 14.1);
       this.controls.target.set(0, 3.5, 0);
       this.camera.fov = 42;
     }
     this.camera.updateProjectionMatrix();
-    const outputInspection = view !== "sphere";
-    this.projectorBodyGroup.visible = !outputInspection;
-    this.projectorDebugGroup.visible =
-      !outputInspection && this.debugOptions.projectors;
-    this.projectorLightGroup.visible = !outputInspection;
-    this.projectorTargetGroup.visible = !outputInspection;
+    this.syncSceneVisibility();
     this.controls.update();
   }
 
@@ -663,11 +1366,17 @@ export class OrbitalScene {
     return this.projectionRig;
   }
 
+  public getAerodynamicState(): Readonly<BernoulliBalloonState> | null {
+    return this.aerodynamicState;
+  }
+
   public setProjectionRig(config: ProjectionRigConfig): void {
     const validated = validateProjectionRig(config);
     this.projectionRig = validated;
+    this.coverageDirty = true;
     this.projectionPattern = validated.calibration.pattern;
     this.rebuildProjectors();
+    this.buildInstallationSupportRig();
     this.setMappingView(this.mappingView);
   }
 
@@ -683,9 +1392,9 @@ export class OrbitalScene {
           height: ROOM_HEIGHT_M,
           depth: ROOM_DEPTH_M,
         }),
-        nominalSphereDiameterM: 5 as const,
+        nominalSphereDiameterM: this.testRigSetup?.ballDiameterM ?? this.projectionRig.sphereDiameterM,
       }),
-      limitations: DIGITAL_TWIN_LIMITATIONS,
+      limitations: this.testRigSetup ? ["Manual test-rig geometry is uncalibrated and does not verify physical alignment.", "Generic camera and projector field-of-view values are editable planning assumptions.", "Live tracked geometry uses its own calibration and is not resized to the preview ball."] : DIGITAL_TWIN_LIMITATIONS,
       lastRuntimeMode: this.lastRuntimeMode,
       lastTrackingStatus: this.lastTrackingStatus,
       lastSequence: this.lastSequence,
@@ -703,6 +1412,135 @@ export class OrbitalScene {
     this.camera.updateProjectionMatrix();
     this.applyRenderQuality();
     this.renderer.setSize(width, height, false);
+    if (this.testRigSetup && this.container.dataset.testRigFocus === "layout") this.focusTestLayout();
+  }
+
+  public renderProjectorOutputWindow(
+    index: number,
+    canvas: HTMLCanvasElement,
+    width: number,
+    height: number,
+    mode: "pre" | "post",
+  ): void {
+    if (this.disposed) return;
+    const outputCamera = this.projectorOutputCameras[index];
+    if (!outputCamera) return;
+    this.advanceShaderClock(performance.now());
+
+    let outputRenderer = this.projectorWindowRenderers.get(canvas);
+    if (!outputRenderer) {
+      outputRenderer = new THREE.WebGLRenderer({
+        canvas,
+        antialias: true,
+        alpha: false,
+        powerPreference: "high-performance",
+      });
+      outputRenderer.outputColorSpace = THREE.SRGBColorSpace;
+      outputRenderer.toneMapping = THREE.ACESFilmicToneMapping;
+      outputRenderer.toneMappingExposure = 1.08;
+      outputRenderer.shadowMap.enabled = false;
+      outputRenderer.setPixelRatio(1);
+      this.projectorWindowRenderers.set(canvas, outputRenderer);
+    }
+
+    const renderWidth = Math.max(1, Math.round(width));
+    const renderHeight = Math.max(1, Math.round(height));
+    if (canvas.width !== renderWidth || canvas.height !== renderHeight) {
+      outputRenderer.setSize(renderWidth, renderHeight, false);
+    }
+
+    const previousAspect = outputCamera.aspect;
+    const restoreSurfaceState = this.applyProjectorOutputState(index, mode === "pre" ? 1 : 2);
+    try {
+      const definition = this.projectionRig.projectors[index];
+      outputCamera.aspect = definition.raster.widthPx / definition.raster.heightPx;
+      outputCamera.updateProjectionMatrix();
+      outputRenderer.setClearColor(0x000000, 1);
+      outputRenderer.clear(true, true, true);
+      let blocked = this.outputBlockReason(index);
+      const structured = index === 0 && mode === "post" && !!this.structuredLight?.active;
+      let scanEllipse = !blocked && structured ? this.structuredLight!.ellipse() : null;
+      if (!blocked && structured && !scanEllipse) blocked = "STRUCTURED_LIGHT_NO_ELLIPSE";
+      if (structured && this.probeDark) {
+        // Delay probe: this frame goes black on purpose; note when the first one is drawn.
+        scanEllipse = null; blocked = "DELAY_PROBE";
+        this.probeDarkRenderedAtMs ??= performance.now();
+      } else if (structured) {
+        // Ride out a single late or unsure tracking frame instead of flashing black.
+        const held = this.structuredLightHold.resolve(performance.now(), blocked, scanEllipse);
+        scanEllipse = held.ellipse; blocked = held.blocked;
+        canvas.dataset.outputHeld = held.held ? "true" : "false";
+        this.projectedEdgeNote = scanEllipse ? ellipseEdgeNote(scanEllipse, renderWidth, renderHeight) : null;
+      }
+      canvas.dataset.outputBlockReason = blocked ?? "";
+      canvas.dataset.outputCalibration = this.structuredLight?.active && index === 0 ? "structured-light" : "measured";
+      if (scanEllipse) {
+        this.renderStructuredLightOutput(outputRenderer, scanEllipse, renderWidth, renderHeight);
+      } else if (!blocked) {
+        const aspect = outputCamera.aspect;
+        const viewportWidth = Math.min(renderWidth, renderHeight * aspect);
+        const viewportHeight = viewportWidth / aspect;
+        outputRenderer.setViewport((renderWidth - viewportWidth) / 2, (renderHeight - viewportHeight) / 2, viewportWidth, viewportHeight);
+        outputRenderer.render(this.projectorOutputScene, outputCamera);
+        outputRenderer.setViewport(0, 0, renderWidth, renderHeight);
+      }
+      canvas.dataset.renderSource = "direct-webgl";
+      canvas.dataset.renderWidth = String(renderWidth);
+      canvas.dataset.renderHeight = String(renderHeight);
+      canvas.dataset.renderProjector = String(index + 1);
+      canvas.dataset.renderMode = mode;
+      canvas.dataset.renderFrameSequence = String(++this.projectorWindowOutputSequence);
+      canvas.dataset.renderFrameTimeMs = performance.now().toFixed(1);
+      canvas.dataset.renderShaderTimeS = this.shaderElapsedS.toFixed(3);
+      this.container.dataset.projectorWindowFrameSequence = canvas.dataset.renderFrameSequence;
+      this.container.dataset.projectorWindowFrameTimeMs = canvas.dataset.renderFrameTimeMs;
+      this.container.dataset.projectorWindowShaderTimeS = canvas.dataset.renderShaderTimeS;
+    } finally {
+      outputCamera.aspect = previousAspect;
+      outputCamera.updateProjectionMatrix();
+      restoreSurfaceState();
+    }
+  }
+
+  /**
+   * Draw the sphere so its silhouette is exactly the projector-space ellipse:
+   * an orthographic camera in projector pixels, sphere squashed along the
+   * ellipse axes, no projector warp (the homography already maps to raster).
+   */
+  private renderStructuredLightOutput(renderer: THREE.WebGLRenderer, ellipse: ImageEllipse, width: number, height: number): void {
+    const radius = this.testRigSetup ? this.testRigSetup.ballDiameterM / 2 : 0.25;
+    const framing = orthoFramingForEllipse(ellipse, width, height, radius);
+    const uniforms = this.surfaceMaterial.uniforms;
+    const radii = uniforms.uRadii.value as THREE.Vector3;
+    const previous = { radii: radii.clone(), angle: Number(uniforms.uShapeAngle.value), mode: Number(uniforms.uOutputPreviewMode.value), wobble: Number(uniforms.uWobble.value), rate: Number(uniforms.uDeformationRate.value), warp: (uniforms.uOutputWarp.value as THREE.Matrix4).clone() };
+    const centre = this.projectorOutputSphere.position;
+    const cam = this.structuredLightCamera;
+    cam.left = framing.left; cam.right = framing.right; cam.top = framing.top; cam.bottom = framing.bottom;
+    cam.near = 0.001; cam.far = radius * 40;
+    cam.position.set(centre.x, centre.y, centre.z + radius * 20);
+    cam.up.set(0, 1, 0); cam.lookAt(centre); cam.updateProjectionMatrix(); cam.updateMatrixWorld(true);
+    try {
+      radii.set(framing.radii[0], framing.radii[1], framing.radii[2]);
+      // The shader's rotate2d(a) turns by -a, so the uniform is the negated world angle.
+      uniforms.uShapeAngle.value = -framing.shapeAngleRad;
+      uniforms.uOutputPreviewMode.value = 1;
+      uniforms.uWobble.value = 0; uniforms.uDeformationRate.value = 0;
+      (uniforms.uOutputWarp.value as THREE.Matrix4).identity();
+      renderer.setViewport(0, 0, width, height);
+      renderer.render(this.projectorOutputScene, cam);
+    } finally {
+      radii.copy(previous.radii); uniforms.uShapeAngle.value = previous.angle; uniforms.uOutputPreviewMode.value = previous.mode;
+      uniforms.uWobble.value = previous.wobble; uniforms.uDeformationRate.value = previous.rate;
+      (uniforms.uOutputWarp.value as THREE.Matrix4).copy(previous.warp);
+    }
+  }
+
+  public disposeProjectorOutputWindow(canvas: HTMLCanvasElement): void {
+    const outputRenderer = this.projectorWindowRenderers.get(canvas);
+    if (!outputRenderer) return;
+    outputRenderer.renderLists.dispose();
+    outputRenderer.dispose();
+    this.projectorWindowRenderers.delete(canvas);
   }
 
   public dispose(): void {
@@ -730,16 +1568,30 @@ export class OrbitalScene {
         materials.add(objectMaterial);
       }
     });
+    this.thumbnailScene.traverse((object) => {
+      const renderable = object as THREE.Mesh;
+      if (renderable.geometry instanceof THREE.BufferGeometry) geometries.add(renderable.geometry);
+      if (renderable.material instanceof THREE.Material) materials.add(renderable.material);
+    });
     geometries.forEach((geometry) => geometry.dispose());
     materials.forEach((material) => material.dispose());
 
+    for (const outputRenderer of this.projectorWindowRenderers.values()) {
+      outputRenderer.renderLists.dispose();
+      outputRenderer.dispose();
+    }
+    this.projectorWindowRenderers.clear();
+
     this.renderer.renderLists.dispose();
     this.projectorOutputTarget.dispose();
+    this.thumbnailTarget.dispose();
     this.renderer.dispose();
     this.renderer.forceContextLoss();
     this.renderer.domElement.remove();
     this.scene.clear();
+    this.projectorOutputSphere.geometry.dispose();
     this.projectorOutputScene.clear();
+    this.thumbnailScene.clear();
   }
 
   private buildLighting(): void {
@@ -873,60 +1725,102 @@ export class OrbitalScene {
     this.warehouseGroup.add(warehouseHemisphere);
     const warehouseKey = new THREE.DirectionalLight(0xffc896, 0.86);
     warehouseKey.position.set(-9, 12, 10);
-    warehouseKey.castShadow = false;
+    warehouseKey.castShadow = true;
+    warehouseKey.shadow.mapSize.set(1536, 1536);
+    warehouseKey.shadow.camera.left = -14;
+    warehouseKey.shadow.camera.right = 14;
+    warehouseKey.shadow.camera.top = 14;
+    warehouseKey.shadow.camera.bottom = -14;
+    warehouseKey.shadow.bias = -0.0004;
     this.warehouseFillLights.push(warehouseKey);
     this.warehouseGroup.add(warehouseKey);
 
-    const brickCanvas = document.createElement("canvas");
-    brickCanvas.width = 512;
-    brickCanvas.height = 512;
-    const context = brickCanvas.getContext("2d");
+    const concreteCanvas = document.createElement("canvas");
+    concreteCanvas.width = 512;
+    concreteCanvas.height = 512;
+    const context = concreteCanvas.getContext("2d");
     if (context) {
-      context.fillStyle = "#34231e";
+      context.fillStyle = "#55514b";
       context.fillRect(0, 0, 512, 512);
-      for (let row = 0; row < 16; row += 1) {
-        const y = row * 32;
-        const offset = row % 2 === 0 ? 0 : -32;
-        for (let column = offset; column < 512; column += 64) {
-          const warmth = (row * 17 + column * 7 + 512) % 19;
-          context.fillStyle = `rgb(${69 + warmth}, ${43 + Math.floor(warmth * 0.55)}, ${35 + Math.floor(warmth * 0.35)})`;
-          context.fillRect(column + 2, y + 2, 60, 28);
-        }
+      for (let index = 0; index < 5800; index += 1) {
+        const x = (index * 197) % 512;
+        const y = (index * 83 + Math.floor(index / 31) * 19) % 512;
+        const shade = 55 + ((index * 29) % 58);
+        const alpha = 0.025 + ((index * 11) % 17) / 500;
+        context.fillStyle = `rgba(${shade + 10}, ${shade + 4}, ${shade}, ${alpha})`;
+        const size = 1 + (index % 7 === 0 ? 3 : 0);
+        context.fillRect(x, y, size, size);
       }
-      context.strokeStyle = "rgba(185, 151, 121, 0.26)";
-      context.lineWidth = 2;
-      for (let y = 0; y <= 512; y += 32) {
+      context.strokeStyle = "rgba(28, 25, 22, 0.22)";
+      context.lineWidth = 3;
+      for (const y of [168, 340]) {
         context.beginPath();
         context.moveTo(0, y);
         context.lineTo(512, y);
         context.stroke();
       }
+      for (const x of [172, 344]) {
+        context.beginPath();
+        context.moveTo(x, 0);
+        context.lineTo(x, 512);
+        context.stroke();
+      }
+      const gradient = context.createRadialGradient(380, 90, 5, 380, 90, 180);
+      gradient.addColorStop(0, "rgba(114, 76, 43, .13)");
+      gradient.addColorStop(1, "rgba(20, 28, 28, 0)");
+      context.fillStyle = gradient;
+      context.fillRect(0, 0, 512, 512);
+      for (let index = 0; index < 34; index += 1) {
+        const x = (index * 149 + 27) % 512;
+        const y = (index * 73 + 91) % 512;
+        const radius = 8 + (index * 11) % 34;
+        const stain = context.createRadialGradient(x, y, 0, x, y, radius);
+        stain.addColorStop(0, `rgba(35, 29, 24, ${0.025 + (index % 5) * 0.008})`);
+        stain.addColorStop(1, "rgba(35, 29, 24, 0)");
+        context.fillStyle = stain;
+        context.fillRect(x - radius, y - radius, radius * 2, radius * 2);
+      }
     }
-    const brickTexture = new THREE.CanvasTexture(brickCanvas);
-    brickTexture.colorSpace = THREE.SRGBColorSpace;
-    brickTexture.wrapS = THREE.RepeatWrapping;
-    brickTexture.wrapT = THREE.RepeatWrapping;
-    brickTexture.repeat.set(4.4, 2.2);
+    const concreteTexture = new THREE.CanvasTexture(concreteCanvas);
+    concreteTexture.colorSpace = THREE.SRGBColorSpace;
+    concreteTexture.wrapS = THREE.RepeatWrapping;
+    concreteTexture.wrapT = THREE.RepeatWrapping;
+    concreteTexture.repeat.set(3.2, 1.6);
 
-    const brickMaterial = new THREE.MeshStandardMaterial({
-      map: brickTexture,
-      color: 0x8a6657,
+    const wallConcrete = new THREE.MeshStandardMaterial({
+      map: concreteTexture,
+      bumpMap: concreteTexture,
+      bumpScale: 0.06,
+      color: 0x777069,
       roughness: 0.96,
       metalness: 0,
     });
+    this.warehouseConcreteMaterials.push(wallConcrete);
     const backWall = new THREE.Mesh(
       new THREE.PlaneGeometry(27.4, 13.4),
-      brickMaterial,
+      wallConcrete,
     );
     backWall.position.set(0, 6.8, -16.84);
     backWall.receiveShadow = true;
     this.warehouseGroup.add(backWall);
+
+    for (const x of [-13.65, 13.65]) {
+      const sideWall = new THREE.Mesh(
+        new THREE.PlaneGeometry(33.5, 13.4),
+        wallConcrete,
+      );
+      sideWall.position.set(x, 6.8, 0);
+      sideWall.rotation.y = x < 0 ? Math.PI / 2 : -Math.PI / 2;
+      sideWall.receiveShadow = true;
+      this.warehouseGroup.add(sideWall);
+    }
 
     const concrete = new THREE.MeshStandardMaterial({
       color: 0x25282a,
       roughness: 0.58,
       metalness: 0.09,
     });
+    this.warehouseConcreteMaterials.push(concrete);
     const warehouseFloor = new THREE.Mesh(
       new THREE.PlaneGeometry(27.5, 33.5),
       concrete,
@@ -949,6 +1843,15 @@ export class OrbitalScene {
       beam.position.set(0, 12.5, z);
       beam.castShadow = true;
       this.warehouseGroup.add(beam);
+    }
+    for (const z of [-15.5, -10.3, -5.1, 0.1, 5.3, 10.5, 15.5]) {
+      const roofRafter = new THREE.Mesh(
+        new THREE.BoxGeometry(27.2, 0.18, 0.34),
+        steel,
+      );
+      roofRafter.position.set(0, 13.15, z);
+      roofRafter.castShadow = true;
+      this.warehouseGroup.add(roofRafter);
     }
     for (const x of [-12.4, 12.4]) {
       const pipe = new THREE.Mesh(
@@ -1004,6 +1907,11 @@ export class OrbitalScene {
       const light = new THREE.PointLight(0xffbd78, 30, 18, 1.65);
       light.position.set(x, 10.6, index === 1 ? 1.5 : -3.5);
       light.castShadow = false;
+      if (index === 1) {
+        light.castShadow = true;
+        light.shadow.mapSize.set(768, 768);
+        light.shadow.bias = -0.0005;
+      }
       this.warehouseLights.push(light);
       this.warehouseGroup.add(light);
       const shade = new THREE.Mesh(
@@ -1201,7 +2109,7 @@ export class OrbitalScene {
     airColumn.renderOrder = 1;
     fan.add(airColumn);
 
-    this.scene.add(fan);
+    this.fanAssemblyGroup.add(fan);
   }
 
   private buildProjectors(): void {
@@ -1224,12 +2132,23 @@ export class OrbitalScene {
 
       const outputCamera = new THREE.PerspectiveCamera(
         definition.fovDeg,
-        640 / 400,
-        0.08,
+        definition.raster.widthPx / definition.raster.heightPx,
+        0.01,
         100,
       );
       outputCamera.position.copy(source);
+      outputCamera.up.set(0, Math.abs(direction.y) > 0.94 ? 0 : 1, Math.abs(direction.y) > 0.94 ? 1 : 0);
       outputCamera.lookAt(targetPosition);
+      if (Math.abs(definition.lensShift.x) > 0.0001 || Math.abs(definition.lensShift.y) > 0.0001) {
+        outputCamera.setViewOffset(
+          PROJECTOR_OUTPUT_WIDTH,
+          PROJECTOR_OUTPUT_HEIGHT,
+          -definition.lensShift.x * PROJECTOR_OUTPUT_WIDTH * 0.5,
+          definition.lensShift.y * PROJECTOR_OUTPUT_HEIGHT * 0.5,
+          PROJECTOR_OUTPUT_WIDTH,
+          PROJECTOR_OUTPUT_HEIGHT,
+        );
+      }
       outputCamera.updateProjectionMatrix();
       outputCamera.updateMatrixWorld(true);
       this.projectorOutputCameras.push(outputCamera);
@@ -1237,7 +2156,15 @@ export class OrbitalScene {
       const body = this.makeProjectorBody(definition.colorHex);
       body.position.copy(source);
       body.lookAt(targetPosition);
+      body.rotateZ(THREE.MathUtils.degToRad(definition.rotationDeg));
+      body.visible = definition.enabled;
+      if (this.testRigSetup) body.scale.setScalar(0.3);
       this.projectorBodyGroup.add(body);
+      if (this.testRigSetup && definition.enabled) {
+        const label = this.makeTestLabel("P1 PROJECTOR", "#93cfff");
+        label.position.copy(source).add(new THREE.Vector3(-0.2, 0.3, 0));
+        this.projectorBodyGroup.add(label);
+      }
 
       const target = new THREE.Object3D();
       target.position.copy(targetPosition);
@@ -1254,31 +2181,23 @@ export class OrbitalScene {
       light.position.copy(source);
       light.target = target;
       light.castShadow = false;
+      light.visible = definition.enabled;
       this.projectorLightGroup.add(light);
 
-      const coneGeometry = new THREE.ConeGeometry(
-        3.3,
-        distance,
-        48,
-        1,
-        true,
-      );
+      const coneGeometry = this.makeProjectionVolumeGeometry(source, targetPosition, definition.fovDeg, definition.raster.widthPx / definition.raster.heightPx, definition.lensShift);
       const beamMaterial = createProjectionBeamMaterial(
         definition.colorHex,
         index * 1.71,
       );
       const cone = new THREE.Mesh(coneGeometry, beamMaterial);
       cone.name = `Projector ${index + 1} light volume`;
-      cone.position.copy(source).add(targetPosition).multiplyScalar(0.5);
-      cone.quaternion.setFromUnitVectors(
-        new THREE.Vector3(0, -1, 0),
-        direction,
-      );
       cone.renderOrder = 1;
-      this.projectorDebugGroup.add(cone);
+      cone.visible = definition.enabled;
+      this.projectorLightGroup.add(cone);
 
-      const frustum = this.makeFrustum(source, targetPosition, definition.colorHex);
+      const frustum = this.makeFrustum(source, targetPosition, definition.colorHex, definition.fovDeg, definition.raster.widthPx / definition.raster.heightPx, definition.lensShift);
       frustum.name = `Projector ${index + 1} frustum`;
+      frustum.visible = definition.enabled;
       this.projectorDebugGroup.add(frustum);
 
       this.projectorRigs.push({
@@ -1299,59 +2218,243 @@ export class OrbitalScene {
     this.buildProjectors();
   }
 
+  private makeProjectionVolumeGeometry(
+    source: THREE.Vector3,
+    target: THREE.Vector3,
+    verticalFovDeg: number,
+    aspect = PROJECTOR_RASTER_ASPECT,
+    lensShift: { x: number; y: number } = { x: 0, y: 0 },
+  ): THREE.BufferGeometry {
+    const forward = target.clone().sub(source);
+    const targetDistance = forward.length();
+    forward.normalize();
+    const distance = targetDistance + this.projectionRig.sphereDiameterM * 0.65;
+    const farTarget = source.clone().addScaledVector(forward, distance);
+    const worldUp = Math.abs(forward.y) > 0.94
+      ? new THREE.Vector3(0, 0, 1)
+      : new THREE.Vector3(0, 1, 0);
+    const right = forward.clone().cross(worldUp).normalize();
+    const up = right.clone().cross(forward).normalize();
+    const halfHeight = Math.tan(THREE.MathUtils.degToRad(verticalFovDeg * 0.5)) * distance;
+    const halfWidth = halfHeight * aspect;
+    // Lens shift moves the picture off the aim line, as the output camera's view offset does.
+    farTarget.addScaledVector(right, -lensShift.x * halfWidth).addScaledVector(up, -lensShift.y * halfHeight);
+    const corners = [
+      farTarget.clone().addScaledVector(right, -halfWidth).addScaledVector(up, halfHeight),
+      farTarget.clone().addScaledVector(right, halfWidth).addScaledVector(up, halfHeight),
+      farTarget.clone().addScaledVector(right, halfWidth).addScaledVector(up, -halfHeight),
+      farTarget.clone().addScaledVector(right, -halfWidth).addScaledVector(up, -halfHeight),
+    ];
+    const positions: number[] = [];
+    const uvs: number[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const a = corners[index]!;
+      const b = corners[(index + 1) % 4]!;
+      positions.push(source.x, source.y, source.z, a.x, a.y, a.z, b.x, b.y, b.z);
+      uvs.push(0.5, 0, 0, 1, 1, 1);
+    }
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute("position", new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setAttribute("uv", new THREE.Float32BufferAttribute(uvs, 2));
+    geometry.computeVertexNormals();
+    return geometry;
+  }
+
+  private makeTestLabel(text: string, colour: string): THREE.Sprite {
+    const canvas = document.createElement("canvas"); canvas.width = 512; canvas.height = 96;
+    const context = canvas.getContext("2d")!;
+    context.fillStyle = "rgba(4,12,20,0.9)"; context.fillRect(0, 0, 512, 96);
+    context.font = "600 44px sans-serif"; context.textAlign = "center"; context.textBaseline = "middle";
+    context.fillStyle = colour; context.fillText(text, 256, 48);
+    const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), depthTest: false, depthWrite: false, transparent: true }));
+    sprite.scale.set(0.62, 0.116, 1); sprite.name = text; sprite.renderOrder = 10;
+    return sprite;
+  }
+
+  private buildTestCamera(): void {
+    const setup = this.testRigSetup!;
+    const camera = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.07, 0.10), new THREE.MeshBasicMaterial({ color: 0x49d9c7 }));
+    camera.add(body);
+    camera.position.set(setup.cameraPositionM.x, setup.cameraPositionM.y, setup.cameraPositionM.z);
+    camera.lookAt(setup.ballCenterM.x, setup.ballCenterM.y, setup.ballCenterM.z);
+    camera.name = "C1 independent manual camera position";
+    this.installationCameraGroup.add(camera);
+    const label = this.makeTestLabel("C1 CAMERA", "#49d9c7");
+    label.position.copy(camera.position).add(new THREE.Vector3(0.25, 0.16, 0));
+    this.installationCameraGroup.add(label);
+    const optical = new THREE.PerspectiveCamera(THREE.MathUtils.radToDeg(2 * Math.atan(Math.tan(THREE.MathUtils.degToRad(setup.cameraFovDeg / 2)) / (4 / 3))), 4 / 3, 0.02, camera.position.distanceTo(new THREE.Vector3(setup.ballCenterM.x, setup.ballCenterM.y, setup.ballCenterM.z)) + setup.ballDiameterM);
+    optical.position.copy(camera.position); optical.lookAt(setup.ballCenterM.x, setup.ballCenterM.y, setup.ballCenterM.z); optical.updateMatrixWorld(true);
+    const helper = new THREE.CameraHelper(optical); helper.name = "C1 generic field of view, uncalibrated";
+    this.installationCameraGroup.add(helper);
+  }
+
+  private buildInstallationSupportRig(): void {
+    this.installationTrussGroup.clear();
+    this.installationCameraGroup.clear();
+    this.installationNirGroup.clear();
+    if (this.testRigSetup) { this.buildTestCamera(); return; }
+    const plans = createInstallationHeadPlans(this.projectionRig, this.installationRigControls);
+    const trussMaterial = new THREE.MeshStandardMaterial({ color: 0x727a7c, metalness: 0.92, roughness: 0.28 });
+    const cameraMaterial = new THREE.MeshStandardMaterial({ color: 0x14191c, metalness: 0.68, roughness: 0.32 });
+    const nirPreset = NIR_ILLUMINATOR_PRESETS.find((item) => item.id === this.installationRigControls.nirIlluminatorId)
+      ?? NIR_ILLUMINATOR_PRESETS[1]!;
+    const cameraLens = CAMERA_LENS_PRESETS.find((item) => item.id === this.installationRigControls.cameraLensId)
+      ?? CAMERA_LENS_PRESETS[2]!;
+    plans.filter((plan) => plan.active).forEach((plan) => {
+      const projector = this.projectionRig.projectors[plan.projectorIndex]!;
+      const tower = new THREE.Group();
+      const height = Math.max(3.2, projector.positionM.y + 0.8);
+      for (const [x, z] of [[-0.26, -0.26], [0.26, -0.26], [-0.26, 0.26], [0.26, 0.26]] as const) {
+        const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, height, 10), trussMaterial);
+        leg.position.set(x, height * 0.5, z);
+        tower.add(leg);
+      }
+      for (let y = 0.5; y < height; y += 0.65) {
+        const ring = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.035, 0.62), trussMaterial);
+        ring.position.y = y;
+        tower.add(ring);
+      }
+      tower.position.set(plan.trussBaseM.x, 0, plan.trussBaseM.z);
+      tower.name = `P${plan.projectorIndex + 1} rated truss rehearsal tower`;
+      this.installationTrussGroup.add(tower);
+
+      if (plan.cameraActive) {
+        const camera = new THREE.Group();
+        camera.add(new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.24, 0.42), cameraMaterial));
+        const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 0.12, 24), cameraMaterial);
+        lens.rotation.x = Math.PI / 2;
+        lens.position.z = 0.25;
+        camera.add(lens);
+        camera.position.set(plan.cameraPositionM.x, plan.cameraPositionM.y, plan.cameraPositionM.z);
+        camera.lookAt(projector.targetM.x, projector.targetM.y, projector.targetM.z);
+        camera.name = `C${plan.projectorIndex + 1} offset tracking camera`;
+        this.installationCameraGroup.add(camera);
+
+        const cameraSource = camera.position.clone();
+        const cameraTarget = new THREE.Vector3(projector.targetM.x, projector.targetM.y, projector.targetM.z);
+        const cameraDirection = cameraTarget.clone().sub(cameraSource);
+        const cameraDistance = cameraDirection.length();
+        cameraDirection.normalize();
+        const cameraRadius = Math.tan(THREE.MathUtils.degToRad(cameraLens.horizontalFovDeg * 0.5)) * cameraDistance;
+        const cameraConeGeometry = new THREE.ConeGeometry(cameraRadius, cameraDistance, 24, 1, true);
+        const cameraGuide = new THREE.LineSegments(
+          new THREE.EdgesGeometry(cameraConeGeometry, 18),
+          new THREE.LineBasicMaterial({ color: 0x69d9c1, transparent: true, opacity: 0.2 }),
+        );
+        cameraGuide.position.copy(cameraSource).add(cameraTarget).multiplyScalar(0.5);
+        cameraGuide.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), cameraDirection);
+        cameraGuide.scale.x = 0.72;
+        cameraGuide.name = `${cameraLens.label} camera field of view`;
+        this.installationCameraGroup.add(cameraGuide);
+      }
+
+      if (plan.nirActive) {
+        const nir = new THREE.Group();
+        const housing = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.34, 0.2), cameraMaterial);
+        nir.add(housing);
+        const emitter = new THREE.Mesh(
+          new THREE.PlaneGeometry(0.38, 0.22),
+          new THREE.MeshBasicMaterial({ color: 0x6e244d, transparent: true, opacity: 0.68, toneMapped: false }),
+        );
+        emitter.position.z = 0.106;
+        nir.add(emitter);
+        nir.position.set(plan.nirPositionM.x, plan.nirPositionM.y, plan.nirPositionM.z);
+        nir.lookAt(projector.targetM.x, projector.targetM.y, projector.targetM.z);
+        nir.name = `${nirPreset.label} rehearsal illuminator`;
+        this.installationNirGroup.add(nir);
+
+        const nirSource = nir.position.clone();
+        const nirTarget = new THREE.Vector3(projector.targetM.x, projector.targetM.y, projector.targetM.z);
+        const nirDirection = nirTarget.clone().sub(nirSource);
+        const nirDistance = nirDirection.length();
+        nirDirection.normalize();
+        const nirRadius = Math.tan(THREE.MathUtils.degToRad(nirPreset.beamAngleDeg * 0.5)) * nirDistance;
+        const nirCone = new THREE.Mesh(
+          new THREE.ConeGeometry(nirRadius, nirDistance, 40, 1, true),
+          new THREE.MeshBasicMaterial({
+            color: 0xa62c73,
+            transparent: true,
+            opacity: 0.035,
+            side: THREE.DoubleSide,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false,
+            toneMapped: false,
+          }),
+        );
+        nirCone.position.copy(nirSource).add(nirTarget).multiplyScalar(0.5);
+        nirCone.quaternion.setFromUnitVectors(new THREE.Vector3(0, -1, 0), nirDirection);
+        nirCone.name = `${nirPreset.label} illumination volume`;
+        this.installationNirGroup.add(nirCone);
+      }
+    });
+  }
+
   private renderNextProjectorOutput(): void {
-    if (this.projectorOutputCanvases.length === 0) return;
-    const index = this.nextProjectorOutputIndex % Math.min(
+    if (this.projectorOutputCanvases.length === 0 || this.projectorOutputCameras.length === 0) return;
+    const count = Math.min(
       this.projectorOutputCanvases.length,
       this.projectorOutputCameras.length,
     );
+    // Disabled heads are skipped rather than rendered black every cycle. They
+    // are blacked once so a stale frame never masquerades as a live tile.
+    let index = -1;
+    for (let attempt = 0; attempt < count; attempt += 1) {
+      const candidate = (this.nextProjectorOutputIndex + attempt) % count;
+      if (this.projectionRig.projectors[candidate]?.enabled !== false) { index = candidate; break; }
+      const disabledCanvas = this.projectorOutputCanvases[candidate];
+      if (disabledCanvas && disabledCanvas.dataset.outputBlockReason !== "PROJECTOR_DISABLED") {
+        const disabledContext = disabledCanvas.getContext("2d", { alpha: false });
+        if (disabledContext) { disabledContext.fillStyle = "#000"; disabledContext.fillRect(0, 0, disabledCanvas.width, disabledCanvas.height); }
+        disabledCanvas.dataset.outputBlockReason = "PROJECTOR_DISABLED";
+        this.onProjectorOutputFrame?.(candidate);
+      }
+    }
+    if (index < 0) return;
     const canvas = this.projectorOutputCanvases[index];
     const outputCamera = this.projectorOutputCameras[index];
     if (!canvas || !outputCamera) return;
 
     const context = canvas.getContext("2d", { alpha: false });
     if (!context) return;
+    const blocked = this.outputBlockReason(index);
+    canvas.dataset.outputBlockReason = blocked ?? "";
+    if (blocked) {
+      context.fillStyle = "#000"; context.fillRect(0, 0, canvas.width, canvas.height);
+      this.nextProjectorOutputIndex = (index + 1) % this.projectorOutputCameras.length;
+      this.onProjectorOutputFrame?.(index);
+      return;
+    }
     const mode = canvas.dataset.outputMode === "pre" ? 1 : 2;
-    const uniforms = this.surfaceMaterial.uniforms;
-    const previousMode = Number(uniforms.uOutputPreviewMode.value);
-    const previousProjector = Number(uniforms.uOutputPreviewProjector.value);
-    const radii = uniforms.uRadii.value as THREE.Vector3;
-    const previousRadii = radii.clone();
-    const previousWobble = Number(uniforms.uWobble.value);
-    const previousDeformationRate = Number(uniforms.uDeformationRate.value);
+    const restoreSurfaceState = this.applyProjectorOutputState(index, mode);
     const previousClearColour = this.renderer.getClearColor(new THREE.Color()).clone();
     const previousClearAlpha = this.renderer.getClearAlpha();
 
-    uniforms.uOutputPreviewMode.value = mode;
-    uniforms.uOutputPreviewProjector.value = index;
-    if (mode === 1) {
-      radii.copy(DEFAULT_RADII_M);
-      uniforms.uWobble.value = 0;
-      uniforms.uDeformationRate.value = 0;
-      this.projectorOutputSphere.position.copy(DEFAULT_CENTER_M);
-    } else {
-      this.projectorOutputSphere.position.copy(this.observedCenter);
-    }
-    this.projectorOutputSphere.updateMatrixWorld(true);
+    const previousViewport = this.renderer.getViewport(new THREE.Vector4());
     this.renderer.setRenderTarget(this.projectorOutputTarget);
     this.renderer.setClearColor(0x000000, 1);
     this.renderer.clear(true, true, true);
+    const rasterAspect = outputCamera.aspect;
+    const outputWidth = Math.min(PROJECTOR_OUTPUT_WIDTH, PROJECTOR_OUTPUT_HEIGHT * rasterAspect);
+    const outputHeight = outputWidth / rasterAspect;
+    this.renderer.setViewport((PROJECTOR_OUTPUT_WIDTH - outputWidth) / 2, (PROJECTOR_OUTPUT_HEIGHT - outputHeight) / 2, outputWidth, outputHeight);
     this.renderer.render(this.projectorOutputScene, outputCamera);
     this.renderer.readRenderTargetPixels(
       this.projectorOutputTarget,
       0,
       0,
-      640,
-      400,
+      PROJECTOR_OUTPUT_WIDTH,
+      PROJECTOR_OUTPUT_HEIGHT,
       this.projectorOutputPixels,
     );
     this.renderer.setRenderTarget(null);
+    this.renderer.setViewport(previousViewport);
     this.renderer.setClearColor(previousClearColour, previousClearAlpha);
 
     const destination = this.projectorOutputImage.data;
-    const rowBytes = 640 * 4;
-    for (let y = 0; y < 400; y += 1) {
-      const sourceOffset = (399 - y) * rowBytes;
+    const rowBytes = PROJECTOR_OUTPUT_WIDTH * 4;
+    for (let y = 0; y < PROJECTOR_OUTPUT_HEIGHT; y += 1) {
+      const sourceOffset = (PROJECTOR_OUTPUT_HEIGHT - 1 - y) * rowBytes;
       destination.set(
         this.projectorOutputPixels.subarray(sourceOffset, sourceOffset + rowBytes),
         y * rowBytes,
@@ -1361,14 +2464,71 @@ export class OrbitalScene {
     canvas.dataset.frameSource = "three-render-target";
     canvas.dataset.frameProjector = String(index + 1);
     canvas.dataset.frameMode = mode === 1 ? "pre-mapping" : "post-mapping";
+    canvas.dataset.frameShader = this.activeShaderId;
+    canvas.dataset.frameTimeS = this.shaderElapsedS.toFixed(3);
+    canvas.dataset.frameSequence = String(++this.projectorOutputSequence);
 
-    radii.copy(previousRadii);
-    uniforms.uWobble.value = previousWobble;
-    uniforms.uDeformationRate.value = previousDeformationRate;
-    uniforms.uOutputPreviewMode.value = previousMode;
-    uniforms.uOutputPreviewProjector.value = previousProjector;
+    restoreSurfaceState();
     this.onProjectorOutputFrame?.(index);
     this.nextProjectorOutputIndex = (index + 1) % this.projectorOutputCameras.length;
+  }
+
+  private applyProjectorOutputState(index: number, mode: 1 | 2): () => void {
+    const uniforms = this.surfaceMaterial.uniforms;
+    const previousWarp = (uniforms.uOutputWarp.value as THREE.Matrix4).clone();
+    (uniforms.uOutputWarp.value as THREE.Matrix4).copy(mode === 2 ? projectorWarpMatrix(this.projectionRig.projectors[index].warpCorners) : new THREE.Matrix4());
+    const previousMode = Number(uniforms.uOutputPreviewMode.value);
+    const previousProjector = Number(uniforms.uOutputPreviewProjector.value);
+    const radii = uniforms.uRadii.value as THREE.Vector3;
+    const previousRadii = radii.clone();
+    const previousWobble = Number(uniforms.uWobble.value);
+    const previousDeformationRate = Number(uniforms.uDeformationRate.value);
+    const previousPosition = this.projectorOutputSphere.position.clone();
+
+    uniforms.uOutputPreviewMode.value = mode;
+    uniforms.uOutputPreviewProjector.value = index;
+    if (mode === 1) {
+      this.testRigSetup ? radii.setScalar(this.testRigSetup.ballDiameterM / 2) : radii.copy(DEFAULT_RADII_M);
+      uniforms.uWobble.value = 0;
+      uniforms.uDeformationRate.value = 0;
+      this.testRigSetup ? this.projectorOutputSphere.position.set(this.testRigSetup.ballCenterM.x, this.testRigSetup.ballCenterM.y, this.testRigSetup.ballCenterM.z) : this.projectorOutputSphere.position.copy(DEFAULT_CENTER_M);
+    } else {
+      if (this.outputWorld?.mode === "live") { uniforms.uWobble.value = 0; uniforms.uDeformationRate.value = 0; }
+      this.projectorOutputSphere.position.copy(
+        this.outputWorld?.mode === "live" && this.outputWorld.prediction?.model !== "disabled"
+          ? this.predictedCenter : this.observedCenter,
+      );
+    }
+    this.projectorOutputSphere.updateMatrixWorld(true);
+
+    return () => {
+      (uniforms.uOutputWarp.value as THREE.Matrix4).copy(previousWarp);
+      radii.copy(previousRadii);
+      uniforms.uWobble.value = previousWobble;
+      uniforms.uDeformationRate.value = previousDeformationRate;
+      uniforms.uOutputPreviewMode.value = previousMode;
+      uniforms.uOutputPreviewProjector.value = previousProjector;
+      this.projectorOutputSphere.position.copy(previousPosition);
+      this.projectorOutputSphere.updateMatrixWorld(true);
+    };
+  }
+
+  private advanceShaderClock(nowMs: number): void {
+    const safeNowMs = Number.isFinite(nowMs) ? nowMs : this.lastShaderClockAtMs;
+    const deltaS = THREE.MathUtils.clamp(
+      (safeNowMs - this.lastShaderClockAtMs) / 1_000,
+      0,
+      0.1,
+    );
+    this.lastShaderClockAtMs = safeNowMs;
+    this.shaderElapsedS = advanceShaderAnimationTime(
+      this.shaderElapsedS,
+      this.reducedMotion ? 0 : deltaS,
+      this.shaderAnimationSpeed,
+    );
+    this.surfaceMaterial.uniforms.uTime.value = this.shaderElapsedS;
+    this.container.dataset.shaderAnimationTime = this.shaderElapsedS.toFixed(3);
+    this.container.dataset.shaderAnimationSpeed = this.shaderAnimationSpeed.toFixed(2);
   }
 
   private makeProjectorBody(
@@ -1415,12 +2575,18 @@ export class OrbitalScene {
     source: THREE.Vector3,
     target: THREE.Vector3,
     colour: THREE.ColorRepresentation,
+    verticalFovDeg: number,
+    aspect: number,
+    lensShift: { x: number; y: number } = { x: 0, y: 0 },
   ): THREE.LineSegments {
     const forward = target.clone().sub(source).normalize();
-    const right = forward.clone().cross(new THREE.Vector3(0, 1, 0)).normalize();
+    const worldUp = Math.abs(forward.y) > 0.94 ? new THREE.Vector3(0,0,1) : new THREE.Vector3(0,1,0);
+    const right = forward.clone().cross(worldUp).normalize();
     const up = right.clone().cross(forward).normalize();
-    const halfWidth = 3.2;
-    const halfHeight = 3.0;
+    const halfHeight = Math.tan(THREE.MathUtils.degToRad(verticalFovDeg / 2)) * source.distanceTo(target);
+    const halfWidth = halfHeight * aspect;
+    // Lens shift moves the picture off the aim line, as the output camera's view offset does.
+    target = target.clone().addScaledVector(right, -lensShift.x * halfWidth).addScaledVector(up, -lensShift.y * halfHeight);
     const corners = [
       target
         .clone()
@@ -1638,7 +2804,8 @@ export class OrbitalScene {
         rig.beamMaterial,
         timeS,
         enabled && this.projectionPattern !== "black"
-          ? 0.006 + brightness * 0.018 + energy * 0.006 + channelLevel * 0.004
+          ? (0.004 + brightness * 0.018 + energy * 0.006 + channelLevel * 0.004) *
+            (0.12 + this.installationRigControls.hazeDensity * 2.35)
           : 0,
       );
     });

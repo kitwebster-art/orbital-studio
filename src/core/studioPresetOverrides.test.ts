@@ -39,4 +39,21 @@ describe("studio preset overrides", () => {
     };
     expect(readStudioPresetOverrides(storage)).toEqual({});
   });
+
+  it("migrates the old untouched 1x animation default to the faster default", () => {
+    const card = SHADER_PRESET_CATALOG[0]!;
+    const legacy = createStudioPresetOverride({
+      cardId: card.id,
+      preset: card.preset,
+      lookControls: { ...DEFAULT_SHADER_LOOK_CONTROLS, motion: 1 },
+      previewExposure: 0.68,
+      fanSpeed: 0.82,
+      environment: DEFAULT_ENVIRONMENT_PREVIEW_CONTROLS,
+    });
+    const storage = {
+      getItem: () => JSON.stringify({ [card.id]: legacy }),
+      setItem: () => undefined,
+    };
+    expect(readStudioPresetOverrides(storage)[card.id]?.lookControls.motion).toBe(1.75);
+  });
 });

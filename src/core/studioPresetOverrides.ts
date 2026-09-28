@@ -9,9 +9,16 @@ import {
   type ShaderPreset,
 } from "./shaderRegistry";
 import {
+  DEFAULT_SHADER_LOOK_CONTROLS,
   normaliseShaderLookControls,
   type ShaderLookControls,
 } from "./shaderLookControls";
+import {
+  normaliseBalloonPhysicsControls,
+  normaliseProjectionMaterialControls,
+  type BalloonPhysicsControls,
+  type ProjectionMaterialControls,
+} from "./balloonSurfaceControls";
 
 export const STUDIO_PRESET_OVERRIDE_SCHEMA_VERSION =
   "orbital.studio-preset-override/1.0" as const;
@@ -26,6 +33,8 @@ export interface StudioPresetOverride {
   previewExposure: number;
   fanSpeed: number;
   environment: EnvironmentPreviewControls;
+  balloonPhysics: BalloonPhysicsControls;
+  projectionMaterial: ProjectionMaterialControls;
 }
 
 export type StudioPresetOverrideMap = Record<string, StudioPresetOverride>;
@@ -36,7 +45,8 @@ interface StorageLike {
 }
 
 export function createStudioPresetOverride(
-  value: Omit<StudioPresetOverride, "schemaVersion">,
+  value: Omit<StudioPresetOverride, "schemaVersion" | "balloonPhysics" | "projectionMaterial"> &
+    Partial<Pick<StudioPresetOverride, "balloonPhysics" | "projectionMaterial">>,
 ): StudioPresetOverride {
   const card = SHADER_PRESET_CATALOG.find((candidate) => candidate.id === value.cardId);
   if (!card) {
@@ -54,6 +64,8 @@ export function createStudioPresetOverride(
     previewExposure: clamp(value.previewExposure),
     fanSpeed: clamp(value.fanSpeed),
     environment: normaliseEnvironmentPreviewControls(value.environment),
+    balloonPhysics: normaliseBalloonPhysicsControls(value.balloonPhysics ?? {}),
+    projectionMaterial: normaliseProjectionMaterialControls(value.projectionMaterial ?? {}),
   };
 }
 
@@ -84,13 +96,18 @@ export function readStudioPresetOverrides(
         }
         try {
           const value = candidate as StudioPresetOverride;
+          const lookControls = value.lookControls?.motion === 1
+            ? { ...value.lookControls, motion: DEFAULT_SHADER_LOOK_CONTROLS.motion }
+            : value.lookControls;
           return [[cardId, createStudioPresetOverride({
             cardId,
             preset: value.preset,
-            lookControls: value.lookControls,
+            lookControls,
             previewExposure: value.previewExposure,
             fanSpeed: value.fanSpeed,
             environment: value.environment,
+            balloonPhysics: value.balloonPhysics,
+            projectionMaterial: value.projectionMaterial,
           })]];
         } catch {
           return [];

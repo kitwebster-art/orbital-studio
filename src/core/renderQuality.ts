@@ -111,6 +111,24 @@ export class RenderQualityGovernor {
   private overBudgetS = 0;
   private stableS = 0;
   private transitions = 0;
+  private override: RenderQualityTier | null = null;
+
+  /**
+   * Temporarily pin the effective tier regardless of the requested mode, for
+   * example while the physical test bench or a projector output window needs
+   * the control page to stay light. Passing null restores the governed tier.
+   */
+  public setOverride(tier: RenderQualityTier | null): RenderQualitySnapshot {
+    if (tier !== null && !isRenderQualityTier(tier)) {
+      throw new Error("Unknown render quality tier");
+    }
+    this.override = tier;
+    return this.snapshot();
+  }
+
+  public getOverride(): RenderQualityTier | null {
+    return this.override;
+  }
 
   public setMode(value: RenderQualityMode): RenderQualitySnapshot {
     this.requested = normaliseRenderQualityMode(value);
@@ -163,7 +181,7 @@ export class RenderQualityGovernor {
   public snapshot(metrics?: PerformanceSnapshot): RenderQualitySnapshot {
     return {
       requested: this.requested,
-      effective: this.effective,
+      effective: this.override ?? this.effective,
       status: metrics ? statusFor(metrics) : "warming",
       p95FrameTimeMs: metrics?.p95FrameTimeMs ?? 0,
       targetFrameTimeMs: metrics?.targetFrameTimeMs ?? TARGET_FRAME_TIME_MS,

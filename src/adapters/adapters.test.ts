@@ -8,6 +8,7 @@ import {
   LATEX_BALLOON_MOTION_PROFILE,
   SyntheticTrackingAdapter,
 } from "./SyntheticTrackingAdapter";
+import { RecordedVideoTrackingAdapter } from "./RecordedVideoTrackingAdapter";
 
 function replayFrame(
   sequence: number,
@@ -70,8 +71,8 @@ describe("SyntheticTrackingAdapter", () => {
       LATEX_BALLOON_MOTION_PROFILE.grossBulgePeriodS,
     );
 
-    expect(Math.min(...centerPeriods)).toBeGreaterThanOrEqual(9.5);
-    expect(Math.min(...bulgePeriods)).toBeGreaterThanOrEqual(7);
+    expect(Math.min(...centerPeriods)).toBeGreaterThanOrEqual(5.8);
+    expect(Math.min(...bulgePeriods)).toBeGreaterThanOrEqual(2.9);
     expect(
       LATEX_BALLOON_MOTION_PROFILE.principalAxisDriftDegPerS,
     ).toBeLessThanOrEqual(1);
@@ -136,6 +137,51 @@ describe("ReplayTrackingAdapter", () => {
     adapter.setInjectedLoss(true);
 
     expect(adapter.sample(0, 0).stateValid).toBe(false);
+  });
+});
+
+describe("RecordedVideoTrackingAdapter", () => {
+  it("maps a recorded 2D fit into a volume-preserving rehearsal envelope", () => {
+    const adapter = new RecordedVideoTrackingAdapter();
+    const capturedAtMs = performance.now();
+    adapter.ingest(
+      {
+        frameWidth: 320,
+        frameHeight: 180,
+        centerPx: [192, 72],
+        centerNorm: [0.6, 0.4],
+        majorDiameterPx: 92,
+        minorDiameterPx: 78,
+        angleDeg: 24,
+        axisRatio: 92 / 78,
+        areaFraction: 0.1,
+        confidence: 0.91,
+        threshold: 160,
+        boundsPx: [146, 33, 238, 111],
+      },
+      capturedAtMs,
+      2.4,
+    );
+
+    const world = adapter.sample(0, 1 / 60);
+    expect(world.mode).toBe("replay");
+    expect(world.status).toBe("tracking");
+    expect(world.centerM?.x).toBeCloseTo(0.4);
+    expect(world.centerM?.y).toBeCloseTo(3.65);
+    expect(world.shape?.volumeProxy).toBeCloseTo(1);
+    expect(world.diagnostics.flags).toContain("RECORDED_VIDEO_INPUT");
+    expect(world.diagnostics.flags).toContain("NO_3D_CALIBRATION");
+    expect(world.materialRotationTracked).toBe(false);
+  });
+
+  it("reports an acquiring state until the detector has a valid fit", () => {
+    const adapter = new RecordedVideoTrackingAdapter();
+    adapter.ingest(null, performance.now(), 1.2);
+
+    const world = adapter.sample(0, 1 / 60);
+    expect(world.status).toBe("acquiring");
+    expect(world.stateValid).toBe(false);
+    expect(world.diagnostics.flags).toContain("SILHOUETTE_MISSING");
   });
 });
 

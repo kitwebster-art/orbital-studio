@@ -27,6 +27,8 @@ describe("environment preview", () => {
       warehouseEnabled: false,
       peopleEnabled: true,
       lighting: 1,
+      warmth: 0.58,
+      concretePatina: 0.72,
     });
   });
 });

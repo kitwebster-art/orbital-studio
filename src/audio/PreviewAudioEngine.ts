@@ -3,6 +3,15 @@ import type {
   RuntimeSnapshot,
 } from "../core/contracts";
 import { clamp } from "../core/math";
+import {
+  DEFAULT_SHADER_EVENT_SOUND_CONTROLS,
+  normaliseShaderEventSoundControls,
+  shaderEventBucket,
+  type ShaderEventSoundControls,
+  type ShaderEventSoundPalette,
+} from "../core/shaderEventSound";
+import { beatFragmentationGate } from "../core/beatFragmentation";
+import { phraseAudioEventGate, phraseEvolutionState } from "../core/phraseEvolution";
 
 interface Voice {
   oscillator: OscillatorNode;
@@ -29,7 +38,15 @@ export class PreviewAudioEngine implements AudioPreviewAdapter {
   private noiseSource: AudioBufferSourceNode | null = null;
   private noiseGain: GainNode | null = null;
   private noiseFilter: BiquadFilterNode | null = null;
+  private eventDry: GainNode | null = null;
+  private eventWet: GainNode | null = null;
+  private eventReverb: ConvolverNode | null = null;
+  private eventControls: ShaderEventSoundControls = { ...DEFAULT_SHADER_EVENT_SOUND_CONTROLS };
+  private lastEventBucket = -1;
+  private eventIndex = 0;
+  private lastBeatStep = -1;
   private active = false;
+  private phraseEnergy = 1;
 
   get enabled(): boolean {
     return this.active;
@@ -52,6 +69,115 @@ export class PreviewAudioEngine implements AudioPreviewAdapter {
     if (this.context && this.master) {
       this.master.gain.setTargetAtTime(0, this.context.currentTime, 0.08);
     }
+  }
+
+  setShaderEventSoundControls(controls: Partial<ShaderEventSoundControls>): void {
+    this.eventControls = normaliseShaderEventSoundControls({ ...this.eventControls, ...controls });
+    if (this.context && this.eventWet && this.eventDry) {
+      const now = this.context.currentTime;
+      this.eventDry.gain.setTargetAtTime(0.44 * this.eventControls.level, now, 0.05);
+      this.eventWet.gain.setTargetAtTime(0.52 * this.eventControls.level * this.eventControls.reverb, now, 0.08);
+    }
+  }
+
+  updateShaderEvents(timeS: number, fragmentationEnabled: boolean, bpm: number, phraseEvolution: number): void {
+    if (!this.active || !this.eventControls.enabled || !fragmentationEnabled) {
+      this.lastEventBucket = -1;
+      return;
+    }
+    const bucket = shaderEventBucket(timeS, this.eventControls.density, bpm);
+    if (bucket === this.lastEventBucket) return;
+    this.lastEventBucket = bucket;
+    this.phraseEnergy = phraseEvolutionState(timeS, bpm, phraseEvolution).energy;
+    if (beatFragmentationGate(bucket, this.eventControls.density) &&
+        phraseAudioEventGate(bucket, this.phraseEnergy)) {
+      this.triggerBeatEvent(bucket, this.phraseEnergy);
+    }
+  }
+
+  triggerShaderEvent(palette = this.eventControls.palette): void {
+    if (!this.context || !this.active || !this.eventDry || !this.eventWet || !this.eventReverb) return;
+    const mixed: Exclude<ShaderEventSoundPalette, "mixed">[] = ["space", "metal", "bass", "sweep", "attack"];
+    const style = palette === "mixed" ? mixed[this.eventIndex++ % mixed.length]! : palette;
+    const now = this.context.currentTime;
+    const pan = Math.sin((this.eventIndex + 1) * 2.17) * 0.82;
+    const settings = {
+      space: { type: "sine" as OscillatorType, from: 980, to: 164, duration: 1.65, attack: 0.012 },
+      metal: { type: "triangle" as OscillatorType, from: 2160, to: 640, duration: 1.05, attack: 0.003 },
+      bass: { type: "sine" as OscillatorType, from: 72, to: 31, duration: 1.42, attack: 0.008 },
+      sweep: { type: "sawtooth" as OscillatorType, from: 118, to: 2380, duration: 1.18, attack: 0.018 },
+      attack: { type: "square" as OscillatorType, from: 3260, to: 280, duration: 0.24, attack: 0.0015 },
+    }[style];
+    const oscillator = this.context.createOscillator();
+    oscillator.type = settings.type;
+    oscillator.frequency.setValueAtTime(settings.from, now);
+    oscillator.frequency.exponentialRampToValueAtTime(settings.to, now + settings.duration);
+    const gain = this.context.createGain();
+    const peak = (style === "bass" ? 0.42 : style === "attack" ? 0.18 : 0.24) *
+      clamp(this.phraseEnergy, 0.18, 1.12);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(peak, now + settings.attack);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + settings.duration);
+    const panner = this.context.createStereoPanner();
+    panner.pan.value = pan;
+    oscillator.connect(gain).connect(panner);
+    panner.connect(this.eventDry);
+    panner.connect(this.eventReverb);
+    oscillator.start(now);
+    oscillator.stop(now + settings.duration + 0.02);
+  }
+
+  private triggerBeatEvent(step: number, energy: number): void {
+    if (!this.context || !this.active) return;
+    if (step === this.lastBeatStep) return;
+    this.lastBeatStep = step;
+    if (step % 4 === 0 || step % 16 === 10) this.triggerKick(step);
+    if (energy > 0.52 && (step % 8 === 3 || step % 8 === 6)) this.triggerNoiseHit(step);
+    if (energy > 1.0 && step % 4 === 1) this.triggerNoiseHit(step + 8);
+    this.triggerShaderEvent(step % 8 === 0 ? "bass" : step % 4 === 2 ? "metal" : "mixed");
+  }
+
+  private triggerKick(step: number): void {
+    if (!this.context || !this.eventDry || !this.eventReverb) return;
+    const now = this.context.currentTime;
+    const oscillator = this.context.createOscillator();
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(step % 16 === 10 ? 118 : 92, now);
+    oscillator.frequency.exponentialRampToValueAtTime(31, now + 0.18);
+    const gain = this.context.createGain();
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.46 * clamp(this.phraseEnergy, 0.2, 1.12), now + 0.002);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.31);
+    oscillator.connect(gain).connect(this.eventDry);
+    gain.connect(this.eventReverb);
+    oscillator.start(now);
+    oscillator.stop(now + 0.34);
+  }
+
+  private triggerNoiseHit(step: number): void {
+    if (!this.context || !this.eventDry || !this.eventReverb) return;
+    const duration = step % 8 === 6 ? 0.035 : 0.075;
+    const frameCount = Math.max(1, Math.floor(this.context.sampleRate * duration));
+    const buffer = this.context.createBuffer(1, frameCount, this.context.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let index = 0; index < data.length; index += 1) {
+      data[index] = Math.random() * 2 - 1;
+    }
+    const source = this.context.createBufferSource();
+    source.buffer = buffer;
+    const filter = this.context.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.frequency.value = step % 8 === 6 ? 5_800 : 2_600;
+    filter.Q.value = 1.8;
+    const gain = this.context.createGain();
+    gain.gain.setValueAtTime(0.16 * clamp(this.phraseEnergy, 0.2, 1.12), this.context.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.0001, this.context.currentTime + duration);
+    const pan = this.context.createStereoPanner();
+    pan.pan.value = step % 2 === 0 ? -0.55 : 0.55;
+    source.connect(filter).connect(gain).connect(pan);
+    pan.connect(this.eventDry);
+    pan.connect(this.eventReverb);
+    source.start();
   }
 
   update(snapshot: RuntimeSnapshot): void {
@@ -174,6 +300,24 @@ export class PreviewAudioEngine implements AudioPreviewAdapter {
     this.master = this.context.createGain();
     this.master.gain.value = 0;
     this.master.connect(this.context.destination);
+
+    this.eventDry = this.context.createGain();
+    this.eventDry.gain.value = 0.44 * this.eventControls.level;
+    this.eventWet = this.context.createGain();
+    this.eventWet.gain.value = 0.52 * this.eventControls.level * this.eventControls.reverb;
+    this.eventReverb = this.context.createConvolver();
+    const impulseSeconds = 3.8;
+    const impulse = this.context.createBuffer(2, Math.floor(this.context.sampleRate * impulseSeconds), this.context.sampleRate);
+    for (let channel = 0; channel < impulse.numberOfChannels; channel += 1) {
+      const samples = impulse.getChannelData(channel);
+      for (let index = 0; index < samples.length; index += 1) {
+        const decay = Math.pow(1 - index / samples.length, 2.8);
+        samples[index] = (Math.random() * 2 - 1) * decay * (channel === 0 ? 0.92 : 1);
+      }
+    }
+    this.eventReverb.buffer = impulse;
+    this.eventDry.connect(this.master);
+    this.eventReverb.connect(this.eventWet).connect(this.master);
 
     this.sub = this.createVoice("sine", 32, 0);
     this.drone = this.createVoice("triangle", 52, -0.45);

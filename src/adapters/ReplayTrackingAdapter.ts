@@ -15,7 +15,10 @@ export interface TrackerReplayFrame {
   sequence: number;
   source_mode: "simulate" | "replay" | "live";
   source_uri: string;
+  clock_domain?: "source-relative" | "monotonic";
+  capture_timestamp_ns?: number;
   source_time_s: number;
+  valid_until_timestamp_ns?: number;
   status: TrackingStatus;
   measurement_valid: boolean;
   state_valid: boolean;
@@ -40,6 +43,11 @@ export interface TrackerReplayFrame {
   } | null;
   material_rotation_tracked: false;
   flags: string[];
+  timing?: {
+    received_timestamp_ns: number;
+    processing_completed_timestamp_ns: number;
+    processing_latency_ms: number;
+  };
 }
 
 export interface ReplayTrackingOptions {
@@ -80,7 +88,7 @@ function assertPair(value: unknown, path: string): asserts value is Pair {
   assertFiniteNumber(value[1], `${path}[1]`);
 }
 
-function parseTrackerFrame(value: unknown, path: string): TrackerReplayFrame {
+export function parseTrackerFrame(value: unknown, path = "frame"): TrackerReplayFrame {
   if (!isRecord(value)) {
     throw new Error(`${path} must be an object`);
   }
@@ -182,6 +190,30 @@ function parseTrackerFrame(value: unknown, path: string): TrackerReplayFrame {
     !value.flags.every((flag) => typeof flag === "string")
   ) {
     throw new Error(`${path}.flags must be an array of strings`);
+  }
+  if (value.timing !== undefined) {
+    if (!isRecord(value.timing)) {
+      throw new Error(`${path}.timing must be an object`);
+    }
+    assertFiniteNumber(
+      value.timing.received_timestamp_ns,
+      `${path}.timing.received_timestamp_ns`,
+    );
+    assertFiniteNumber(
+      value.timing.processing_completed_timestamp_ns,
+      `${path}.timing.processing_completed_timestamp_ns`,
+    );
+    assertFiniteNumber(
+      value.timing.processing_latency_ms,
+      `${path}.timing.processing_latency_ms`,
+    );
+    if (
+      value.timing.received_timestamp_ns < 0 ||
+      value.timing.processing_completed_timestamp_ns < 0 ||
+      value.timing.processing_latency_ms < 0
+    ) {
+      throw new Error(`${path}.timing values must be non-negative`);
+    }
   }
 
   return value as unknown as TrackerReplayFrame;
@@ -546,4 +578,3 @@ export class ReplayTrackingAdapter implements TrackingAdapter {
     };
   }
 }
-

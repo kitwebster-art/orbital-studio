@@ -35,11 +35,14 @@ export interface OrbitalSurfaceState {
 
 export const ORBITAL_SURFACE_VERTEX_SHADER = /* glsl */ `
   uniform float uTime;
+  uniform mat4 uOutputWarp;
   uniform vec3 uCenter;
   uniform vec3 uRadii;
   uniform float uShapeAngle;
   uniform float uWobble;
   uniform float uDeformationRate;
+  uniform float uLowerBulge;
+  uniform float uAsymmetry;
 
   varying vec3 vWorldPosition;
   varying vec3 vSurfaceDirection;
@@ -70,7 +73,14 @@ export const ORBITAL_SURFACE_VERTEX_SHADER = /* glsl */ `
     float secondaryBulge =
       sin((direction.x + direction.z) * 4.6 - shaderTime * 0.68) *
       sin(direction.y * 2.4 + shaderTime * 0.34);
-    float deformation = (broadBulge * 0.78 + secondaryBulge * 0.22) * uWobble * 0.075;
+    float meanRadius = (uRadii.x + uRadii.y + uRadii.z) / 3.0;
+    float lowerEnvelope = 1.0 - smoothstep(-0.75, 0.45, direction.y);
+    float asymmetricLobe =
+      sin(direction.x * 2.1 - direction.z * 2.8 + shaderTime * 0.31) *
+      lowerEnvelope * uAsymmetry;
+    float deformation =
+      (broadBulge * 0.68 + secondaryBulge * 0.2 + asymmetricLobe * (0.04 + uLowerBulge * 0.14)) *
+      uWobble * meanRadius * 0.13;
     vec3 deformed = shaped + direction * deformation;
 
     vec3 alignedNormal = normalize(alignedDirection / max(uRadii, vec3(0.01)));
@@ -85,7 +95,10 @@ export const ORBITAL_SURFACE_VERTEX_SHADER = /* glsl */ `
     vWorldNormal = normalize(mat3(modelMatrix) * alignedNormal);
     vDeformation = deformation;
 
-    gl_Position = projectionMatrix * viewMatrix * worldPosition;
+    vec4 clip = projectionMatrix * viewMatrix * worldPosition;
+    vec4 warped = uOutputWarp * clip;
+    // Warp raster XY without changing camera depth or near/far clipping.
+    gl_Position = vec4(warped.xy * clip.w / max(warped.w, 0.000001), clip.z, clip.w);
   }
 `;
 
@@ -110,6 +123,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
   uniform vec3 uProjectorDirections[5];
   uniform vec3 uProjectorRights[5];
   uniform vec3 uProjectorUps[5];
+  uniform vec3 uProjectorRaster[5]; // aspect, horizontal shift, vertical shift
   uniform float uProjectorCosHalfFov[5];
   uniform float uProjectorTanHalfFov[5];
   uniform float uProjectorLevels[5];
@@ -135,10 +149,28 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
   uniform float uLookContrast;
   uniform float uLookSoftness;
   uniform float uLookLevel;
+  uniform float uMaterialReflectance;
+  uniform float uMaterialTranslucency;
+  uniform float uMaterialInternalBleed;
+  uniform float uMaterialRoughness;
   uniform float uRegionCenters[4];
   uniform float uRegionWidths[4];
   uniform float uRegionStyles[4];
   uniform float uRegionIntensities[4];
+  uniform float uLivingSkinsEnabled;
+  uniform float uLivingSkinPatchCount;
+  uniform float uLivingSkinVariety;
+  uniform float uLivingSkinGlitch;
+  uniform float uLivingSkinFlashRate;
+  uniform float uLivingSkinSequenceMode;
+  uniform float uLivingSkinEventHold;
+  uniform float uLivingSkinAttackSharpness;
+  uniform float uLivingSkinBreath;
+  uniform float uLivingSkinEdgeSoftness;
+  uniform float uLivingSkinBpm;
+  uniform float uLivingSkinPhraseEvolution;
+  uniform float uBeautyLighting;
+  uniform float uSphereGlow;
 
   varying vec3 vWorldPosition;
   varying vec3 vSurfaceDirection;
@@ -825,13 +857,17 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
         dot(fromProjector, uProjectorRights[index]),
         dot(fromProjector, uProjectorUps[index])
       ) / max(forward * uProjectorTanHalfFov[index], 0.0001);
-      vec2 projectorUv = projectorPlane * vec2(0.5, 0.8) + 0.5;
+      // PerspectiveCamera uses vertical FOV and a rotated 10:16 portrait
+      // raster. Keep the
+      // feather-mask UVs identical to that camera projection so the blend mask
+      // cannot cut a sphere that is otherwise fully inside its output frame.
+      vec2 projectorUv = projectorPlane * vec2(0.5 / max(uProjectorRaster[index].x, 0.001), 0.5) + 0.5 + uProjectorRaster[index].yz * 0.5;
       vec4 edge = max(uProjectorBlendEdges[index], vec4(0.0001));
       float feather =
         smoothstep(0.0, edge.x, projectorUv.x) *
         smoothstep(0.0, edge.y, 1.0 - projectorUv.x) *
-        smoothstep(0.0, edge.z, projectorUv.y) *
-        smoothstep(0.0, edge.w, 1.0 - projectorUv.y);
+        smoothstep(0.0, edge.z, 1.0 - projectorUv.y) *
+        smoothstep(0.0, edge.w, projectorUv.y);
       feather = pow(clamp(feather, 0.0, 1.0), max(uProjectorBlendGamma[index], 0.1));
       float incidence = max(dot(vWorldNormal, -fromProjector), 0.0);
       float contribution = cone * incidence * uProjectorLevels[index] *
@@ -902,11 +938,131 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float appliedRegion = regionWeight * clamp(regionIntensity, 0.0, 1.0);
       coverage = mix(coverage, max(coverage, regionSample.a), appliedRegion * 0.86);
       surfaceColour = mix(surfaceColour, regionSample.rgb, appliedRegion * 0.78);
+
+      // Cinematic mosaic mode divides the continuous sphere into twelve
+      // geometric cube-face quadrants. It remains separate from the selected
+      // full-sphere shader used by the mapping test bench.
+      if (uLivingSkinsEnabled > 0.5) {
+        vec3 absoluteDirection = abs(direction);
+        float faceId = 0.0;
+        float splitCoordinate = direction.y;
+        float faceBoundary = abs(absoluteDirection.x - absoluteDirection.z);
+        if (absoluteDirection.y >= absoluteDirection.x && absoluteDirection.y >= absoluteDirection.z) {
+          faceId = direction.y >= 0.0 ? 4.0 : 5.0;
+          splitCoordinate = direction.x;
+          faceBoundary = min(abs(absoluteDirection.y - absoluteDirection.x), abs(absoluteDirection.y - absoluteDirection.z));
+        } else if (absoluteDirection.x >= absoluteDirection.z) {
+          faceId = direction.x >= 0.0 ? 0.0 : 1.0;
+          splitCoordinate = direction.z;
+          faceBoundary = min(abs(absoluteDirection.x - absoluteDirection.y), abs(absoluteDirection.x - absoluteDirection.z));
+        } else {
+          faceId = direction.z >= 0.0 ? 2.0 : 3.0;
+          splitCoordinate = direction.x;
+          faceBoundary = min(abs(absoluteDirection.z - absoluteDirection.x), abs(absoluteDirection.z - absoluteDirection.y));
+        }
+        float beat = authoredTime * uLivingSkinBpm / 60.0;
+        float bar = floor(beat / 4.0);
+        float beatInBar = beat - bar * 4.0;
+        float barInPhrase = mod(bar, 16.0);
+        float phraseProgress = barInPhrase + beatInBar / 4.0;
+        float authoredPhraseEnergy = 0.16;
+        if (barInPhrase < 4.0) authoredPhraseEnergy = mix(0.35, 0.75, phraseProgress / 4.0);
+        else if (barInPhrase < 5.0) authoredPhraseEnergy = 0.28;
+        else if (barInPhrase < 8.0) authoredPhraseEnergy = mix(0.58, 0.95, (phraseProgress - 5.0) / 3.0);
+        else if (barInPhrase < 9.0) authoredPhraseEnergy = 0.38;
+        else if (barInPhrase < 12.0) authoredPhraseEnergy = mix(0.58, 1.0, (phraseProgress - 9.0) / 3.0);
+        else if (barInPhrase < 13.0) authoredPhraseEnergy = 1.08;
+        else if (barInPhrase < 14.0) authoredPhraseEnergy = 0.88;
+        else if (barInPhrase < 15.0) authoredPhraseEnergy = 0.5;
+        float phraseEnergy = mix(1.0, authoredPhraseEnergy, uLivingSkinPhraseEvolution);
+        float subdivision = uLivingSkinFlashRate < 0.22 ? 0.25 :
+          uLivingSkinFlashRate < 0.48 ? 0.5 :
+          uLivingSkinFlashRate < 0.72 ? 1.0 :
+          uLivingSkinFlashRate < 0.9 ? 2.0 : 4.0;
+        float eventClock = beat * subdivision;
+        float globalFlashStep = floor(eventClock);
+        float geometryStyle = mod(globalFlashStep, 7.0);
+        float horizontalSlices = floor((direction.y * 0.5 + 0.5) * mix(3.0, 11.0, uLivingSkinVariety));
+        float verticalSlices = floor((direction.x * 0.5 + 0.5) * mix(5.0, 14.0, uLivingSkinVariety)) +
+          floor((direction.z * 0.5 + 0.5) * mix(3.0, 9.0, uLivingSkinVariety)) * 17.0;
+        vec2 cubeUv = vec2(splitCoordinate, direction.y) / max(max(absoluteDirection.x, absoluteDirection.z), 0.08);
+        vec2 tileCell = floor((cubeUv * 0.5 + 0.5) * mix(3.0, 9.0, uLivingSkinVariety));
+        float cornerId = floor((direction.x + 1.0) * 1.5) + floor((direction.y + 1.0) * 1.5) * 3.0 + floor((direction.z + 1.0) * 1.5) * 9.0;
+        float lineId = floor((direction.x * 0.7 + direction.y * 1.2 + direction.z * 0.35 + 2.2) * 8.0);
+        float wedgeId = floor((dot(direction, normalize(vec3(1.0, 0.72, -0.38))) + 1.5) * 6.0) +
+          floor((dot(direction, normalize(vec3(-0.34, 0.52, 1.0))) + 1.5) * 5.0) * 19.0;
+        float geometricId = faceId * 2.0 + step(0.0, splitCoordinate);
+        if (geometryStyle < 1.0) geometricId = horizontalSlices;
+        else if (geometryStyle < 2.0) geometricId = verticalSlices;
+        else if (geometryStyle < 3.0) geometricId = tileCell.x + tileCell.y * 9.0 + faceId * 81.0;
+        else if (geometryStyle < 4.0) geometricId = cornerId;
+        else if (geometryStyle < 5.0) geometricId = lineId;
+        else if (geometryStyle < 6.0) geometricId = wedgeId;
+        float panelId = mod(geometricId, 12.0);
+        float rhythmSeed = panelId * 17.17 + bar * 41.73 + uShaderSeed * 7.91;
+        float durationHash = hash31(vec3(rhythmSeed, 12.9898, 78.233));
+        float variedDuration = durationHash < 0.12 ? 0.125 :
+          durationHash < 0.27 ? 0.25 :
+          durationHash < 0.48 ? 0.5 :
+          durationHash < 0.70 ? 1.0 :
+          durationHash < 0.86 ? 2.0 : 4.0;
+        float variationGate = step(hash31(vec3(rhythmSeed + 19.4, 4.17, 9.31)), uLivingSkinEventHold);
+        float holdDuration = mix(0.5, variedDuration, variationGate);
+        float offsetGate = step(hash31(vec3(rhythmSeed + 37.1, 2.9, 17.4)), uLivingSkinEventHold) * step(holdDuration, 1.001);
+        float offsetBeats = floor(hash31(vec3(rhythmSeed + 61.2, 8.3, 3.7)) * 8.0) * 0.125 * offsetGate;
+        float regionClock = (beatInBar + offsetBeats) / holdDuration;
+        float flashStep = bar * 32.0 + floor(regionClock);
+        float eventPhase = fract(regionClock);
+        float enabledPanels = clamp(uLivingSkinPatchCount * mix(0.42, 1.12, phraseEnergy), 2.0, 12.0);
+        float panelEnabled = 1.0 - step(enabledPanels - 0.5, panelId);
+        float evolvingStep = floor(flashStep * mix(0.0, 1.0, uLivingSkinVariety));
+        float styleHash = hash31(vec3(panelId * 4.7, uShaderSeed * 31.0, 12.6 + evolvingStep));
+        float style = floor(mix(1.0, 42.99, mix(0.18, 1.0, uLivingSkinVariety) * styleHash));
+        float patternIndex = mod(flashStep, 16.0);
+        float euclideanGate = max(step(0.5, mod(patternIndex, 3.0)), 1.0 - step(0.5, mod(patternIndex, 5.0)));
+        float sequenceGate = mix(1.0, euclideanGate, uLivingSkinGlitch);
+        if (uLivingSkinSequenceMode > 0.5 && uLivingSkinSequenceMode < 1.5) {
+          float cascadeHead = mod(flashStep, enabledPanels);
+          float cascadeDistance = mod(cascadeHead - panelId + enabledPanels, enabledPanels);
+          sequenceGate *= 1.0 - step(mix(1.0, 4.0, uLivingSkinEventHold), cascadeDistance);
+        } else if (uLivingSkinSequenceMode >= 1.5 && uLivingSkinSequenceMode < 2.5) {
+          float activeFace = mod(floor(flashStep), 6.0);
+          sequenceGate *= 1.0 - step(0.5, abs(floor(panelId * 0.5) - activeFace));
+        } else if (uLivingSkinSequenceMode >= 2.5 && uLivingSkinSequenceMode < 3.5) {
+          float eruptionProgress = fract(regionClock * mix(0.08, 0.24, uLivingSkinEventHold));
+          sequenceGate *= 1.0 - step(eruptionProgress * enabledPanels, panelId);
+        } else if (uLivingSkinSequenceMode >= 3.5) {
+          sequenceGate = 1.0;
+        }
+        float attackTime = mix(0.28, 0.018, uLivingSkinAttackSharpness);
+        float releaseStart = mix(0.16, 0.94, uLivingSkinEventHold);
+        float eventEnvelope = smoothstep(0.0, attackTime, eventPhase) *
+          (1.0 - smoothstep(releaseStart, 1.0, eventPhase));
+        if (uLivingSkinSequenceMode >= 3.5) eventEnvelope = 1.0;
+        float breathing = 0.78 + 0.22 * sin(authoredTime * mix(0.2, 0.8, uLivingSkinBreath) + panelId * 1.73);
+        float sliceEdge = min(
+          fract((direction.y * 0.5 + 0.5) * 9.0),
+          min(fract((direction.x * 0.5 + 0.5) * 12.0), fract((direction.z * 0.5 + 0.5) * 12.0))
+        );
+        float tileEdge = min(fract((cubeUv.x * 0.5 + 0.5) * 7.0), fract((cubeUv.y * 0.5 + 0.5) * 7.0));
+        float edgeDistance = geometryStyle < 2.0 ? sliceEdge : geometryStyle < 3.0 ? tileEdge : min(abs(splitCoordinate), faceBoundary);
+        float edgeMask = smoothstep(0.002, mix(0.015, 0.14, uLivingSkinEdgeSoftness), edgeDistance);
+        float panelWeight = panelEnabled * sequenceGate * eventEnvelope * mix(1.0, breathing, uLivingSkinBreath) * edgeMask * mix(0.38, 1.08, phraseEnergy);
+        vec4 panelSkin = evaluateShader(style, direction, authoredTime, styleHash,
+          clamp(uShaderParamA, 0.0, 1.0), clamp(uShaderParamB, 0.0, 1.0),
+          clamp(uShaderParamC, 0.0, 1.0), clamp(uShaderParamD, 0.0, 1.0),
+          clamp(uShaderParamE, 0.0, 1.0), residualFault);
+        surfaceColour = mix(surfaceColour * 0.12, panelSkin.rgb, panelWeight);
+        coverage = max(coverage * 0.18, panelSkin.a * panelWeight);
+      }
       coverage = pow(clamp(coverage, 0.0, 1.0), mix(1.6, 0.4, uLookSoftness));
       surfaceColour = finishShaderColour(surfaceColour);
     } else if (uProjectionPattern < 1.5) {
-      coverage = rigCoverage;
-      surfaceColour = rigColour;
+      float coverageRisk = smoothstep(0.0, 0.46, rigCoverage);
+      float overlapSafe = smoothstep(0.46, 0.82, rigCoverage);
+      coverage = 1.0;
+      surfaceColour = mix(vec3(0.95, 0.04, 0.025), vec3(1.0, 0.58, 0.04), coverageRisk);
+      surfaceColour = mix(surfaceColour, vec3(0.08, 0.92, 0.48), overlapSafe);
     } else if (uProjectionPattern < 2.5) {
       float mappingGrid = seamlessGrid(direction, 12.0, 0.018);
       coverage = clamp(mappingGrid * 0.86 + rigCoverage * 0.42, 0.0, 1.0);
@@ -926,6 +1082,17 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
     }
 
     vec3 viewDirection = normalize(cameraPosition - vWorldPosition);
+    vec3 beautyNormal = normalize(vWorldNormal);
+    vec3 beautyLight = normalize(vec3(-0.48, 0.72, 0.5));
+    vec3 beautyHalf = normalize(beautyLight + viewDirection);
+    float beautyDiffuse = max(dot(beautyNormal, beautyLight), 0.0);
+    float beautySpecular = pow(max(dot(beautyNormal, beautyHalf), 0.0), mix(18.0, 92.0, 1.0 - uMaterialRoughness));
+    float beautyFresnel = pow(1.0 - max(dot(beautyNormal, viewDirection), 0.0), 5.0);
+    surfaceColour *= mix(1.0, 0.72 + beautyDiffuse * 0.62, uBeautyLighting);
+    surfaceColour += mix(vec3(0.3, 0.62, 0.82), vec3(1.0, 0.74, 0.46), uMelody) *
+      (beautySpecular * 0.34 + beautyFresnel * 0.12) * uBeautyLighting;
+    surfaceColour += mix(vec3(0.06, 0.42, 0.7), vec3(0.6, 0.9, 1.0), uMelody) *
+      (0.08 + coverage * 0.24) * uSphereGlow;
     float rim = pow(1.0 - abs(dot(normalize(vWorldNormal), viewDirection)), 3.1);
     float surfaceBreath = uOutputPreviewMode > 0.5
       ? 1.0
@@ -935,20 +1102,38 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
     float confidence = max(trackingLight, authoringFloor);
     float outputMask = uOutputPreviewMode > 1.5 ? selectedOutputWeight : 1.0;
     float projectedLight = coverage * surfaceBreath * confidence * outputMask;
+    // Projector rasters are an authored light signal, not a dim reflection in
+    // the warehouse simulation. Keep them responsive to the shader controls,
+    // but prevent legacy low-energy score states from crushing the image.
+    float outputSignal = step(0.5, uOutputPreviewMode);
+    float signalBrightness = mix(uBrightness, max(uBrightness, 0.82), outputSignal);
+    float signalEnergy = mix(uEnergy, max(uEnergy, 0.70), outputSignal);
+    float signalExposure = mix(uPreviewExposure, max(uPreviewExposure, 0.78), outputSignal);
     float luminance =
-      mix(0.42, 1.8, uBrightness) *
-      mix(0.64, 1.28, uEnergy) *
-      mix(0.72, 1.68, uPreviewExposure);
+      mix(0.42, 1.8, signalBrightness) *
+      mix(0.64, 1.28, signalEnergy) *
+      mix(0.72, 1.68, signalExposure);
 
     vec3 colour;
     if (uOutputPreviewMode > 0.5) {
       vec3 outputSurface = uOutputPreviewMode > 1.5
         ? max(surfaceColour - vec3(selectedOutputBlack), vec3(0.0))
         : surfaceColour;
-      colour = outputSurface * projectedLight * luminance;
+      // A modest HDR drive fills the 8-bit projector signal before ACES
+      // highlight roll-off, giving saturated shaders punch without hard clips.
+      colour = outputSurface * projectedLight * luminance * 1.8;
     } else {
       colour = vec3(0.0025, 0.0032, 0.0042);
-      colour += surfaceColour * projectedLight * luminance;
+      float reflected = projectedLight * mix(0.42, 1.22, uMaterialReflectance);
+      float wash = uMaterialTranslucency * uMaterialInternalBleed *
+        mix(0.06, 0.34, 1.0 - uMaterialRoughness) * confidence;
+      vec3 washedSurface = mix(
+        surfaceColour,
+        vec3(dot(surfaceColour, vec3(0.333))),
+        wash * 0.46
+      );
+      colour += washedSurface * reflected * luminance;
+      colour += washedSurface * wash * luminance;
       colour += mix(vec3(0.02, 0.43, 0.62), vec3(0.76, 0.92, 1.0), uMelody) *
         rim * (0.012 + 0.05 * uDensity) * confidence;
     }
@@ -971,6 +1156,8 @@ export function createOrbitalSurfaceMaterial(): THREE.ShaderMaterial {
       uShapeAngle: { value: 0 },
       uWobble: { value: 0 },
       uDeformationRate: { value: 0 },
+      uLowerBulge: { value: 0.68 },
+      uAsymmetry: { value: 0.62 },
       uEnergy: { value: 0.3 },
       uBrightness: { value: 0.4 },
       uDensity: { value: 0.2 },
@@ -996,6 +1183,7 @@ export function createOrbitalSurfaceMaterial(): THREE.ShaderMaterial {
       uProjectorUps: {
         value: Array.from({ length: 5 }, () => new THREE.Vector3(0, 1, 0)),
       },
+      uProjectorRaster: { value: Array.from({ length: 5 }, () => new THREE.Vector3(0.625, 0, 0)) },
       uProjectorCosHalfFov: { value: new Float32Array(5) },
       uProjectorTanHalfFov: { value: new Float32Array(5) },
       uProjectorLevels: { value: new Float32Array(5) },
@@ -1008,6 +1196,7 @@ export function createOrbitalSurfaceMaterial(): THREE.ShaderMaterial {
       uProjectorBlendGamma: { value: new Float32Array(5) },
       uProjectorBlackLevels: { value: new Float32Array(5) },
       uProjectorEnabled: { value: new Float32Array(5) },
+      uOutputWarp: { value: new THREE.Matrix4() },
       uOutputPreviewMode: { value: 0 },
       uOutputPreviewProjector: { value: 0 },
       uProjectionPattern: { value: 0 },
@@ -1025,10 +1214,28 @@ export function createOrbitalSurfaceMaterial(): THREE.ShaderMaterial {
       uLookContrast: { value: DEFAULT_SHADER_LOOK_CONTROLS.contrast },
       uLookSoftness: { value: DEFAULT_SHADER_LOOK_CONTROLS.softness },
       uLookLevel: { value: DEFAULT_SHADER_LOOK_CONTROLS.level },
+      uMaterialReflectance: { value: 0.82 },
+      uMaterialTranslucency: { value: 0.34 },
+      uMaterialInternalBleed: { value: 0.28 },
+      uMaterialRoughness: { value: 0.58 },
       uRegionCenters: { value: new Float32Array(4) },
       uRegionWidths: { value: new Float32Array(4) },
       uRegionStyles: { value: new Float32Array(4) },
       uRegionIntensities: { value: new Float32Array(4) },
+      uLivingSkinsEnabled: { value: 0 },
+      uLivingSkinPatchCount: { value: 9 },
+      uLivingSkinVariety: { value: 0.78 },
+      uLivingSkinGlitch: { value: 0.34 },
+      uLivingSkinFlashRate: { value: 0.58 },
+      uLivingSkinSequenceMode: { value: 3 },
+      uLivingSkinEventHold: { value: 0.46 },
+      uLivingSkinAttackSharpness: { value: 0.72 },
+      uLivingSkinBreath: { value: 0.66 },
+      uLivingSkinEdgeSoftness: { value: 0.42 },
+      uLivingSkinBpm: { value: 112 },
+      uLivingSkinPhraseEvolution: { value: 0.82 },
+      uBeautyLighting: { value: 0 },
+      uSphereGlow: { value: 0 },
     },
     side: THREE.FrontSide,
     toneMapped: true,
@@ -1087,6 +1294,7 @@ export function updateOrbitalSurfaceMaterial(
   const directions = material.uniforms.uProjectorDirections.value as THREE.Vector3[];
   const rights = material.uniforms.uProjectorRights.value as THREE.Vector3[];
   const ups = material.uniforms.uProjectorUps.value as THREE.Vector3[];
+  const rasters = material.uniforms.uProjectorRaster.value as THREE.Vector3[];
   const colours = material.uniforms.uProjectorColours.value as THREE.Color[];
   const cosHalfFov = material.uniforms.uProjectorCosHalfFov.value as Float32Array;
   const tanHalfFov = material.uniforms.uProjectorTanHalfFov.value as Float32Array;
@@ -1123,6 +1331,7 @@ export function updateOrbitalSurfaceMaterial(
     );
     rights[index].set(projector.right.x, projector.right.y, projector.right.z);
     ups[index].set(projector.up.x, projector.up.y, projector.up.z);
+    rasters[index].set(projector.rasterAspect, projector.lensShift.x, projector.lensShift.y);
     cosHalfFov[index] = projector.cosHalfFov;
     tanHalfFov[index] = projector.tanHalfFov;
     levels[index] = projector.level;

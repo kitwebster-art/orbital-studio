@@ -60,4 +60,16 @@ describe("render quality policy", () => {
     expect(held.effective).toBe("high");
     expect(held.status).toBe("over-budget");
   });
+
+  it("pins the effective tier while an override is active and restores the governed tier afterwards", () => {
+    const governor = new RenderQualityGovernor();
+    governor.setMode("high");
+    expect(governor.snapshot().effective).toBe("high");
+    expect(governor.setOverride("low").effective).toBe("low");
+    expect(governor.update(performance(5), 0.5).effective).toBe("low");
+    expect(governor.snapshot().requested).toBe("high");
+    expect(governor.getOverride()).toBe("low");
+    expect(governor.setOverride(null).effective).toBe("high");
+    expect(() => governor.setOverride("ultra" as never)).toThrow();
+  });
 });

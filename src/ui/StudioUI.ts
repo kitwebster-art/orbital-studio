@@ -13,12 +13,25 @@ import type {
   ProjectionPattern,
   ProjectorLevels,
 } from "../core/projectionRig";
+import { createDefaultProjectionRig } from "../core/projectionRig";
+import {
+  CAMERA_LENS_PRESETS,
+  DEFAULT_INSTALLATION_RIG_CONTROLS,
+  NIR_ILLUMINATOR_PRESETS,
+  PROJECTOR_OPTICAL_PRESETS,
+  installationRigSummary,
+  normaliseInstallationRigControls,
+  type InstallationRigControls,
+} from "../core/installationRig";
 import {
   DEFAULT_PROJECTION_CALIBRATION_SETTINGS,
   warpCornersToCss,
   type ProjectionCalibrationResult,
   type ProjectionCalibrationSettings,
 } from "../core/projectionCalibration";
+import { describeOutputBlockReason } from "../core/projectionOutputGate";
+import { patternRuns, type CalibrationPattern } from "../core/structuredLight";
+import { projectorSurfaceSignature } from "../core/scanMapping";
 import {
   MAPPING_VIEW_MODES,
   SURFACE_REGION_DEFINITIONS,
@@ -64,6 +77,7 @@ import { clamp, formatTime } from "../core/math";
 import {
   DEFAULT_ENVIRONMENT_PREVIEW_CONTROLS,
   DEFAULT_FAN_PREVIEW_SPEED,
+  ENVIRONMENT_LIGHTING_PRESETS,
   fanSpeedToClearanceM,
   type EnvironmentPreviewControls,
 } from "../core/environmentPreview";
@@ -73,6 +87,58 @@ import {
   writeStudioPresetOverrides,
   type StudioPresetOverrideMap,
 } from "../core/studioPresetOverrides";
+import type { BernoulliBalloonState } from "../core/bernoulliAirflow";
+import {
+  BALLOON_MATERIAL_PROFILE_IDS,
+  DEFAULT_BALLOON_PHYSICS_CONTROLS,
+  DEFAULT_PROJECTION_MATERIAL_CONTROLS,
+  materialControlsForProfile,
+  type BalloonPhysicsControls,
+  type ProjectionMaterialControls,
+} from "../core/balloonSurfaceControls";
+import type { ProjectionCoverageAnalysis } from "../core/projectionCoverage";
+import type { RenderProjectAuthoringState } from "../core/renderProject";
+import {
+  DEFAULT_LIVING_SKIN_CONTROLS,
+  normaliseLivingSkinControls,
+  type LivingSkinControls,
+  type LivingSkinSequenceMode,
+} from "../core/livingSkin";
+import {
+  SOCIAL_ASPECT_PRESETS,
+  SOCIAL_CAMERA_PRESETS,
+  type SocialAspectPreset,
+  type SocialCameraPreset,
+} from "../core/socialCapture";
+import {
+  DEFAULT_CINEMATIC_SCENE_CONTROLS,
+  normaliseCinematicSceneControls,
+  type CinematicSceneControls,
+} from "../core/cinematicScene";
+import {
+  DEFAULT_SHADER_EVENT_SOUND_CONTROLS,
+  SHADER_EVENT_SOUND_PALETTES,
+  normaliseShaderEventSoundControls,
+  type ShaderEventSoundControls,
+} from "../core/shaderEventSound";
+import {
+  DEFAULT_PROJECTOR_TEST_PRESET_ID,
+  PROJECTOR_TEST_OBSERVATION_VERDICTS,
+  PROJECTOR_TEST_PHYSICAL_VERDICTS,
+  PROJECTOR_TEST_PRESETS,
+  PROJECTOR_TEST_PATTERNS,
+  buildProjectorTestFilename,
+  buildProjectorTestRecord,
+  getProjectorTestPreset,
+  parseProjectorTestRecord,
+  patternLabel,
+  projectorTestObservationVerdictLabel,
+  projectorTestPhysicalVerdictLabel,
+  projectorTestThrowRatio,
+  renderProjectorTestPattern,
+  type ProjectorTestPattern,
+  type ProjectorTestRecord,
+} from "../core/projectorTest";
 
 export interface DebugOptions {
   projectors: boolean;
@@ -83,6 +149,7 @@ export interface DebugOptions {
 
 export interface StudioCallbacks {
   onPlayToggle(): void;
+  onAudiovisualShow(): void;
   onReset(): void;
   onSeek(timeS: number): void;
   onRate(rate: number): void;
@@ -105,7 +172,19 @@ export interface StudioCallbacks {
   onFanFault(enabled: boolean): void;
   onFanCueOverride(cue: number | null): void;
   onEnvironmentControls(controls: EnvironmentPreviewControls): void;
+  onBalloonPhysicsControls(controls: BalloonPhysicsControls): void;
+  onProjectionMaterialControls(controls: ProjectionMaterialControls): void;
   onProjectionPattern(pattern: ProjectionPattern): void;
+  onInstallationRigControls(controls: InstallationRigControls): void;
+  onRenderProjectorOutput(
+    index: number,
+    canvas: HTMLCanvasElement,
+    width: number,
+    height: number,
+    mode: "pre" | "post",
+    driveRuntime: boolean,
+  ): void;
+  onDisposeProjectorOutput(canvas: HTMLCanvasElement): void;
   onProjectionCalibration(settings: ProjectionCalibrationSettings): void;
   onMappingView(view: MappingViewMode): void;
   onShaderPreviewExposure(exposure: number): void;
@@ -119,6 +198,14 @@ export interface StudioCallbacks {
   onShaderPreset(preset: ShaderPreset): void;
   onSurfaceRegions(assignments: readonly SurfaceRegionAssignment[]): void;
   onSurfaceRegionsEnabled(enabled: boolean): void;
+  onExportRenderProject(authoring: RenderProjectAuthoringState): void;
+  onLivingSkinControls(controls: LivingSkinControls): void;
+  onCinematicSceneControls(controls: CinematicSceneControls): void;
+  onCinematicCameraFocus(camera: SocialCameraPreset): void;
+  onShaderEventSoundControls(controls: ShaderEventSoundControls): void;
+  onAuditionShaderEvent(): void;
+  onCaptureSocialStill(aspect: SocialAspectPreset, camera: SocialCameraPreset): void;
+  onRecordSocialClip(aspect: SocialAspectPreset, camera: SocialCameraPreset): void;
   onTransportConnect(protocol: TransportProtocol): void;
   onTransportPulse(): void;
   onTransportDisconnect(): void;
@@ -213,6 +300,39 @@ function escapeHtml(value: string): string {
   );
 }
 
+/**
+ * Write the projector window's page. When the window is already full screen (Studio
+ * reloaded after an update and Go live is reconnecting it), keep its full-screen
+ * surface element and swap only what is inside and around it: replacing the surface
+ * itself would drop the window out of full screen, and nobody wants to walk over to
+ * the projector after every update.
+ */
+function writeProjectorWindowBody(output: Window, markup: string): void {
+  const doc = output.document;
+  const oldSurface = doc.querySelector<HTMLElement>(".surface");
+  const keep = !!oldSurface && doc.fullscreenElement === oldSurface;
+  if (!keep || !oldSurface) { doc.body.innerHTML = markup; return; }
+  const scratch = doc.createElement("div");
+  scratch.innerHTML = markup;
+  const newSurface = scratch.querySelector<HTMLElement>(".surface");
+  const newMain = scratch.querySelector("main"), oldMain = doc.querySelector("main");
+  if (!newSurface || !newMain || !oldMain || !oldMain.contains(oldSurface)) { doc.body.innerHTML = markup; return; }
+  // Match the fresh surface's attributes too: a stale data attribute from the previous
+  // session (the block reason) made status updates overwrite the new canvas.
+  for (const name of oldSurface.getAttributeNames()) oldSurface.removeAttribute(name);
+  for (const name of newSurface.getAttributeNames()) oldSurface.setAttribute(name, newSurface.getAttribute(name) ?? "");
+  oldSurface.replaceChildren(...Array.from(newSurface.childNodes));
+  for (const selector of ["header", ".meta"]) {
+    const fresh = newMain.querySelector(selector), stale = oldMain.querySelector(selector);
+    if (fresh && stale) stale.replaceWith(fresh);
+  }
+  const freshStyle = scratch.querySelector("style"), staleStyle = doc.querySelector("style");
+  if (freshStyle && staleStyle) staleStyle.replaceWith(freshStyle);
+}
+
+/** Runs inside a projector window, so it needs nothing from the Studio page that opened it. */
+const PROJECTOR_WINDOW_FULLSCREEN_TOGGLE = "document.fullscreenElement?document.exitFullscreen():document.querySelector('.surface').requestFullscreen()";
+
 export class StudioUI {
   readonly viewport: HTMLElement;
   private readonly callbacks: StudioCallbacks;
@@ -250,6 +370,9 @@ export class StudioUI {
   private shaderCatalogGpu = "all";
   private shaderCatalogLimit = SHADER_CATALOG_PAGE_SIZE;
   private projectionPattern: ProjectionPattern = "authored";
+  private installationRigControls: InstallationRigControls = {
+    ...DEFAULT_INSTALLATION_RIG_CONTROLS,
+  };
   private readonly projectorOutputModes: Array<"pre" | "post"> = [
     "post", "post", "post", "post", "post",
   ];
@@ -262,10 +385,44 @@ export class StudioUI {
   private surfaceRegions = [...createDefaultSurfaceRegionAssignments()];
   private surfaceRegionsEnabled = false;
   private currentShaderPreset: ShaderPreset = createShaderPreset("geometric-grid");
+  private livingSkinControls: LivingSkinControls = {
+    ...DEFAULT_LIVING_SKIN_CONTROLS,
+  };
+  private cinematicSceneControls: CinematicSceneControls = {
+    ...DEFAULT_CINEMATIC_SCENE_CONTROLS,
+  };
+  private shaderEventSoundControls: ShaderEventSoundControls = {
+    ...DEFAULT_SHADER_EVENT_SOUND_CONTROLS,
+  };
   private previewExposure = 0.68;
   private environmentControls: EnvironmentPreviewControls = {
     ...DEFAULT_ENVIRONMENT_PREVIEW_CONTROLS,
   };
+  private balloonPhysicsControls: BalloonPhysicsControls = {
+    ...DEFAULT_BALLOON_PHYSICS_CONTROLS,
+  };
+  private projectionMaterialControls: ProjectionMaterialControls = {
+    ...DEFAULT_PROJECTION_MATERIAL_CONTROLS,
+  };
+  private shaderThumbnailRenderer: ((preset: ShaderPreset, canvas: HTMLCanvasElement) => void) | null = null;
+  private shaderThumbnailGeneration = 0;
+  private lastCoverageSignature = "";
+  private lastProjectionCalibrationResult: ProjectionCalibrationResult | null = null;
+  private calibrationStep = -1;
+  private calibrationPointCount = 0;
+  private outputResolution = { width: 1200, height: 1920, refreshHz: 60 };
+  private readonly outputWindowSessions = new Map<
+    MappingViewMode,
+    { canvas: HTMLCanvasElement; owner: Window; frameRequest: number }
+  >();
+  private projectorTestPattern: ProjectorTestPattern = "latency";
+  private projectorTestOverlay = true;
+  private projectorTestObservedHz: number | null = null;
+  private projectorComparisonRecords: ProjectorTestRecord[] = [];
+  private projectorTestWindowSession: {
+    owner: Window;
+    frameRequest: number;
+  } | null = null;
   private readonly presetStorage: Storage | null;
   private presetOverrides: StudioPresetOverrideMap;
   private lastSnapshot: RuntimeSnapshot | null = null;
@@ -399,6 +556,11 @@ export class StudioUI {
       peopleEnabled: this.requireInput(root, "warehouse-people"),
       environmentLighting: this.requireInput(root, "environment-lighting"),
       environmentLightingValue: this.requireElement(root, "environment-lighting-value"),
+      environmentWarmth: this.requireInput(root, "environment-warmth"),
+      environmentWarmthValue: this.requireElement(root, "environment-warmth-value"),
+      concretePatina: this.requireInput(root, "concrete-patina"),
+      concretePatinaValue: this.requireElement(root, "concrete-patina-value"),
+      aerodynamicStatus: this.requireElement(root, "aerodynamic-status"),
     };
     this.bind(root);
     this.buildTimeline();
@@ -429,8 +591,11 @@ export class StudioUI {
       snapshot.movement.description;
     this.elements.status.textContent = world.status;
     this.elements.status.dataset.status = world.status;
+    const physicalLiveSource = world.mode === "live"
+      && !world.diagnostics.flags.includes("SIMULATED_NATIVE_CAPTURE")
+      && !world.diagnostics.flags.includes("NO_HARDWARE_CLAIM");
     this.elements.phaseOneStatus.textContent = world.mode === "live"
-      ? `${world.status.toUpperCase()} · ${world.diagnostics.activeCameraCount} physical cameras · ${world.diagnostics.sourceAgeMs.toFixed(1)} ms source age`
+      ? `${world.status.toUpperCase()} · ${world.diagnostics.activeCameraCount} ${physicalLiveSource ? "physical cameras" : "simulated camera streams"} · ${world.diagnostics.sourceAgeMs.toFixed(1)} ms source age`
       : `${world.status.toUpperCase()} · synthetic ${world.diagnostics.activeCameraCount}-view solver · 0 physical cameras`;
     this.elements.mode.textContent = this.cueReplayActive
       ? "cue replay"
@@ -442,7 +607,7 @@ export class StudioUI {
       1,
     )} ms`;
     this.elements.cameras.textContent = world.mode === "live"
-      ? world.diagnostics.activeCameraCount.toString()
+      ? `${world.diagnostics.activeCameraCount} ${physicalLiveSource ? "physical" : "simulated"}`
       : "0 physical";
     const residual = world.prediction?.residualM;
     this.elements.residual.textContent = residual
@@ -479,7 +644,8 @@ export class StudioUI {
     this.elements.fanState.dataset.fault = snapshot.fan.fault
       ? "true"
       : "false";
-    this.elements.liveNotice.hidden = world.mode !== "live";
+    // Only a simulated bridge needs the "software evidence only" warning; a real camera does not.
+    this.elements.liveNotice.hidden = world.mode !== "live" || !world.diagnostics.flags.includes("SIMULATED_NATIVE_CAPTURE");
     this.scrubber.value = snapshot.showTimeS.toString();
     this.updateTimeline(snapshot);
     this.updateParameters(snapshot.audiovisual);
@@ -530,7 +696,62 @@ export class StudioUI {
     }
   }
 
+  updateAerodynamics(state: Readonly<BernoulliBalloonState> | null): void {
+    if (!state) {
+      this.elements.aerodynamicStatus.textContent = "LIVE TRACKING · AERODYNAMICS MEASURED EXTERNALLY";
+      return;
+    }
+    const lateralM = Math.hypot(state.offsetM.x, state.offsetM.z);
+    this.elements.aerodynamicStatus.textContent =
+      `VIDEO-DERIVED LATEX · FLOW LOCK ${Math.round(state.flowAttachment * 100)}% · LATERAL ${lateralM.toFixed(2)} m · HOVER ${state.offsetM.y.toFixed(2)} m`;
+    this.elements.fanHoverClearance.textContent = `${state.offsetM.y.toFixed(1)} m`;
+  }
+
+  updateProjectionCoverage(analysis: Readonly<ProjectionCoverageAnalysis> | null): void {
+    if (!analysis) return;
+    const signature = `${analysis.status}:${analysis.overallPercent.toFixed(1)}:${analysis.projectors.map((item) => `${item.status}:${item.clippedEdge}`).join(":")}`;
+    if (signature === this.lastCoverageSignature) return;
+    this.lastCoverageSignature = signature;
+    const summary = document.getElementById("coverage-summary");
+    if (summary) {
+      summary.dataset.status = analysis.status;
+      summary.innerHTML = this.installationRigControls.mode === "production-5"
+        ? `<strong>${analysis.overallPercent.toFixed(1)}% five-projector envelope coverage</strong><span>${analysis.uncoveredPercent.toFixed(1)}% outside · ${analysis.overlapPercent.toFixed(1)}% overlap</span>`
+        : `<strong>One-projector prototype · P${this.installationRigControls.prototypeProjectorIndex + 1}</strong><span>${analysis.projectors[this.installationRigControls.prototypeProjectorIndex]?.coveragePercent.toFixed(1) ?? "0.0"}% in frame · P1–P5 available from Outputs above</span>`;
+    }
+    analysis.projectors.forEach((projector, index) => {
+      const tile = document.querySelector<HTMLElement>(`[data-output-view="projector-${index + 1}"]`);
+      if (!tile) return;
+      tile.dataset.coverageStatus = projector.status;
+      const badge = tile.querySelector<HTMLElement>("[data-coverage-badge]");
+      const footer = tile.querySelector<HTMLElement>("small");
+      const active = this.installationRigControls.mode === "production-5"
+        || index === this.installationRigControls.prototypeProjectorIndex;
+      tile.dataset.outputActive = String(active);
+      if (badge) {
+        badge.textContent = active
+          ? `${projector.coveragePercent.toFixed(1)}% · ${projector.clippedEdge === "none" ? "IN FRAME" : `${projector.clippedEdge.toUpperCase()} CLIP`}`
+          : "STANDBY · ONE-PROJECTOR MODE";
+      }
+      if (footer) {
+        footer.textContent = active
+          ? "portrait · post-mapping · active render"
+          : "portrait · output ready · currently inactive";
+      }
+    });
+  }
+
+  setShaderThumbnailRenderer(
+    renderer: (preset: ShaderPreset, canvas: HTMLCanvasElement) => void,
+  ): void {
+    this.shaderThumbnailRenderer = renderer;
+    this.renderVisibleShaderThumbnails();
+  }
+
   updateProjectionCalibration(result: ProjectionCalibrationResult): void {
+    this.lastProjectionCalibrationResult = result;
+    const exportButton = document.getElementById("export-calibration") as HTMLButtonElement | null;
+    if (exportButton) exportButton.disabled = false;
     this.elements.projectionCalibration.textContent =
       result.mode === "measured" ? "MEASURED" : "SIMULATED SOLVE";
     this.elements.projectionCalibration.dataset.state = result.mode;
@@ -556,7 +777,7 @@ export class StudioUI {
       }
       const label = tile?.querySelector<HTMLElement>("small");
       if (label) {
-        label.textContent = `${projector.meanErrorPx.toFixed(2)} px · post-warp + blend`;
+        label.textContent = `portrait · ${projector.meanErrorPx.toFixed(2)} px · post-warp + blend`;
       }
     });
     this.refreshOpenOutputInspector();
@@ -570,6 +791,141 @@ export class StudioUI {
     return Array.from(
       document.querySelectorAll<HTMLCanvasElement>("canvas[data-projector-output]"),
     );
+  }
+
+  setTestOutputSize(width: number, height: number): void {
+    // Existing windows captured their raster at creation. Close them only when
+    // the raster actually changes, so a position nudge or re-apply keeps a
+    // projector window (and its fullscreen state) alive.
+    const rasterChanged = this.outputResolution.width !== width || this.outputResolution.height !== height;
+    if (rasterChanged) {
+      for (const session of [...this.outputWindowSessions.values()]) session.owner.close();
+      this.outputWindowSessions.clear();
+      if (this.projectorTestWindowSession) { this.projectorTestWindowSession.owner.close(); this.projectorTestWindowSession = null; }
+    }
+    this.outputResolution = { width, height, refreshHz: 60 };
+    document.getElementById("studio-shell")!.dataset.testLayout = "true";
+    const select = document.getElementById('output-resolution') as HTMLSelectElement;
+    const value = `${width}x${height}`;
+    if (!Array.from(select.options).some(option => option.value === value)) select.add(new Option(`${width} × ${height}`, value));
+    select.value = value;
+    (document.getElementById('output-refresh') as HTMLSelectElement).value = '60';
+    const pattern = document.getElementById('projector-test-resolution') as HTMLSelectElement;
+    if (!Array.from(pattern.options).some(option => option.value === value)) pattern.add(new Option(`${width} × ${height}`, value));
+    pattern.value = value;
+    pattern.dispatchEvent(new Event('change'));
+    const orientation = document.querySelector<HTMLElement>('.orientation-readout');
+    if (orientation) { orientation.querySelector('strong')!.textContent = width >= height ? 'LANDSCAPE TEST RIG' : 'PORTRAIT TEST RIG'; orientation.querySelector('span')!.textContent = `One projector / ${width} × ${height} requested`; }
+    const first = document.querySelector<HTMLElement>('[data-output-view="projector-1"] .output-tile-heading > span');
+    if (first) first.textContent = `P1 · ${width >= height ? '0°' : '90°'}`;
+    document.querySelectorAll<HTMLButtonElement>('[data-open-output-window]').forEach(button => { button.disabled = button.dataset.openOutputWindow !== 'projector-1'; });
+  }
+
+  private outputBlackedOut = true;
+
+  /** True while at least one projector output or projector pattern window is open. */
+  hasOpenOutputWindow(): boolean {
+    for (const [view, session] of this.outputWindowSessions) {
+      if (session.owner.closed) this.outputWindowSessions.delete(view);
+    }
+    if (this.projectorTestWindowSession?.owner.closed) this.projectorTestWindowSession = null;
+    return this.outputWindowSessions.size > 0 || this.projectorTestWindowSession !== null;
+  }
+
+  getActiveWorkspace(): string {
+    return document.querySelector<HTMLElement>(".studio-shell")?.dataset.workspace ?? "looks";
+  }
+
+  setOutputBlackout(active: boolean): void {
+    this.outputBlackedOut = active;
+    const testSurface = this.projectorTestWindowSession?.owner.document.querySelector<HTMLElement>('.surface');
+    if (testSurface) testSurface.dataset.blackout = String(active);
+    for (const session of this.outputWindowSessions.values()) {
+      const surface = session.owner.document.querySelector<HTMLElement>('.surface');
+      if (surface) surface.dataset.blackout = String(active);
+    }
+  }
+
+  /** The open P1 projector output window, if any. */
+  private projectorOneWindow(): Window | null {
+    const session = this.outputWindowSessions.get("projector-1" as MappingViewMode);
+    return session && !session.owner.closed ? session.owner : null;
+  }
+
+  hasProjectorOneWindow(): boolean { return this.projectorOneWindow() !== null; }
+
+  /** True when the P1 window fills its screen: HTML full screen, or macOS full screen (which does not set fullscreenElement). */
+  projectorOneIsFullscreen(): boolean {
+    const output = this.projectorOneWindow();
+    if (!output) return false;
+    if (output.document.fullscreenElement) return true;
+    return output.innerWidth >= output.screen.width - 2 && output.innerHeight >= output.screen.height - 2;
+  }
+
+  /** Device-pixel layout of the P1 raster on screen, or null without a P1 window. See projectorSurfaceSignature. */
+  projectorOneSurfaceSignature(): string | null {
+    const output = this.projectorOneWindow();
+    const canvas = output?.document.querySelector<HTMLCanvasElement>(".surface canvas[data-render-source]");
+    if (!output || !canvas) return null;
+    const box = canvas.getBoundingClientRect();
+    return projectorSurfaceSignature({
+      boxLeft: box.left, boxTop: box.top, boxWidth: box.width, boxHeight: box.height,
+      rasterWidth: this.outputResolution.width, rasterHeight: this.outputResolution.height,
+      devicePixelRatio: output.devicePixelRatio || 1, screenX: output.screenX, screenY: output.screenY,
+    });
+  }
+
+  getOutputRaster(): { width: number; height: number } {
+    return { width: this.outputResolution.width, height: this.outputResolution.height };
+  }
+
+  /**
+   * Draw a structured-light pattern at native raster 1:1 over the P1 window,
+   * above blackout and the sphere. Resolves after two animation frames in the
+   * popup so the pattern has been presented before the bridge captures.
+   */
+  showCalibrationPattern(pattern: CalibrationPattern, width: number, height: number): Promise<void> {
+    const output = this.projectorOneWindow();
+    if (!output) return Promise.reject(new Error("Open the P1 output window before scanning"));
+    const doc = output.document;
+    const surface = doc.querySelector<HTMLElement>(".surface");
+    if (!surface) return Promise.reject(new Error("P1 output window has no projection surface"));
+    let canvas = doc.querySelector<HTMLCanvasElement>("canvas[data-calibration-pattern]");
+    if (!canvas) {
+      canvas = doc.createElement("canvas");
+      canvas.dataset.calibrationPattern = "true";
+      // Same box and the same object-fit rule as the live output canvas, so a
+      // raster pixel lands on the same physical spot in the scan and in live
+      // output, whatever the window scaling. Above the blackout overlay, no
+      // smoothing. In full screen at native resolution this is exactly 1:1.
+      canvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;display:block;z-index:1000;image-rendering:pixelated;background:#000;";
+      surface.append(canvas);
+    }
+    if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+    canvas.hidden = false;
+    const ctx = canvas.getContext("2d", { alpha: false });
+    if (!ctx) return Promise.reject(new Error("Pattern canvas unavailable"));
+    ctx.imageSmoothingEnabled = false;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, width, height);
+    ctx.fillStyle = "#fff";
+    for (const [start, end] of patternRuns(pattern, width, height)) {
+      if (pattern.kind === "gray" && pattern.axis === "y") ctx.fillRect(0, start, width, end - start);
+      else ctx.fillRect(start, 0, end - start, height);
+    }
+    canvas.dataset.patternKind = pattern.kind;
+    canvas.dataset.patternDesc = pattern.kind === "gray" ? `${pattern.axis}${pattern.bit}${pattern.inverted ? "i" : ""}` : pattern.kind;
+    return new Promise((resolve, reject) => {
+      if (output.closed) { reject(new Error("P1 output window closed")); return; }
+      output.requestAnimationFrame(() => output.requestAnimationFrame(() => (output.closed ? reject(new Error("P1 output window closed")) : resolve())));
+    });
+  }
+
+  /** Remove the pattern overlay; normal (blacked out) output shows again. */
+  clearCalibrationPattern(): void {
+    const canvas = this.projectorOneWindow()?.document.querySelector<HTMLCanvasElement>("canvas[data-calibration-pattern]");
+    if (canvas) canvas.remove();
   }
 
   refreshProjectorOutputFrame(index: number): void {
@@ -726,6 +1082,12 @@ export class StudioUI {
       });
   }
 
+  selectTestComposition(shaderId: string): void {
+    const card = SHADER_PRESET_CATALOG.find(candidate => candidate.preset.shaderId === shaderId);
+    if (!card) throw new Error(`Unknown test composition: ${shaderId}`);
+    this.activateShaderCard(card);
+  }
+
   restoreSelectedPreset(): void {
     const card = SHADER_PRESET_CATALOG.find(
       (candidate) => candidate.id === this.selectedCatalogCardId,
@@ -772,7 +1134,7 @@ export class StudioUI {
     });
     outputGrid.querySelectorAll<HTMLElement>(".output-tile small").forEach((label, index) => {
       const mode = this.projectorOutputModes[index] === "pre" ? "pre-mapping" : "post-mapping";
-      label.textContent = `${displayLook} · ${mode} · live`;
+      label.textContent = `${displayLook} · portrait · ${mode} · live`;
     });
     const view = outputGrid.dataset.viewMode as MappingViewMode;
     this.updateOutputViewSemantics(MAPPING_VIEW_MODES.includes(view) ? view : "sphere");
@@ -798,7 +1160,7 @@ export class StudioUI {
     outputGrid.querySelectorAll<HTMLElement>(".output-tile-preview").forEach((preview, index) => {
       preview.setAttribute(
         "aria-label",
-        `${viewLabel} · ${displayLook} · P${index + 1} preview`,
+        `${viewLabel} · ${displayLook} · P${index + 1} portrait preview`,
       );
     });
   }
@@ -892,7 +1254,8 @@ export class StudioUI {
   }
 
   setPlaying(playing: boolean): void {
-    this.elements.playButton.textContent = playing ? "Pause" : "Run test";
+    const stationaryTest = document.getElementById("studio-shell")?.dataset.testLayout === "true";
+    this.elements.playButton.textContent = stationaryTest ? (playing ? "Pause visuals" : "Animate test visuals") : (playing ? "Pause motion" : "Run motion test");
     this.elements.playButton.dataset.playing = String(playing);
   }
 
@@ -942,11 +1305,151 @@ export class StudioUI {
       });
       const shell = root.querySelector<HTMLElement>(".studio-shell");
       if (shell) shell.dataset.workspace = workspace;
+      const workspacePurpose = this.requireElement(root, "workspace-purpose");
+      const workspacePurposeTitle = this.requireElement(root, "workspace-purpose-title");
+      const workspacePurposeCopy = this.requireElement(root, "workspace-purpose-copy");
+      const purpose = {
+        "projector-test": ["TEST THE PHYSICAL PROJECTOR", "Open deterministic fullscreen patterns, confirm the accepted signal on the projector itself, then export a structured test record."],
+        projection: ["SET UP THE OUTPUTS", "Choose one or five projectors, then run guided calibration. Results remain simulated until physical hardware is measured."],
+        tracking: ["PROVE SHAPE LOCK", "Inspect confidence, source age and camera health. Use Replay before Live, and treat synthetic data as rehearsal only."],
+        system: ["CONNECT AND VERIFY", "Check render performance, transport and device services here. Green software status does not claim that physical hardware is connected."],
+        guide: ["INSTALL STEP BY STEP", "Follow the room, camera and projector setup in order. Each physical gate must pass before opening the installation."],
+      }[workspace];
+      workspacePurpose.hidden = !purpose;
+      if (purpose) {
+        workspacePurposeTitle.textContent = purpose[0];
+        workspacePurposeCopy.textContent = purpose[1];
+      }
     };
     root.querySelectorAll<HTMLButtonElement>("[data-workspace-tab]").forEach((button) => {
       button.addEventListener("click", () => activateWorkspace(button.dataset.workspaceTab ?? "looks"));
     });
     activateWorkspace("looks");
+    this.bindProjectorTest(root);
+
+    const shell = this.requireElement(root, "studio-shell");
+    const expertToggle = this.requireElement(root, "looks-expert-toggle");
+    const setLooksExpert = (enabled: boolean): void => {
+      shell.dataset.looksExpert = String(enabled);
+      expertToggle.textContent = enabled ? "Hide expert controls" : "Show expert controls";
+      expertToggle.setAttribute("aria-expanded", String(enabled));
+      this.requireElement(root, "looks-mode-readout").textContent = enabled
+        ? "EXPERT · ALL CONTROLS"
+        : "SIMPLE · CREATE A LOOK";
+    };
+    expertToggle.addEventListener("click", () => {
+      setLooksExpert(shell.dataset.looksExpert !== "true");
+    });
+    setLooksExpert(false);
+
+    const syncQuickShowControls = (): void => {
+      const bpm = Math.round(this.livingSkinControls.bpm);
+      const fragment = Math.round(
+        ((this.livingSkinControls.variety + this.livingSkinControls.glitch + this.livingSkinControls.flashRate) / 3) * 100,
+      );
+      const level = Math.round(this.shaderEventSoundControls.level * 100);
+      const rhythmScatter = Math.round(this.livingSkinControls.eventHold * 100);
+      const phraseEvolution = Math.round(this.livingSkinControls.phraseEvolution * 100);
+      this.requireInput(root, "quick-show-bpm").value = String(bpm);
+      this.requireElement(root, "quick-show-bpm-value").textContent = String(bpm);
+      this.requireInput(root, "quick-show-fragment").value = String(fragment);
+      this.requireElement(root, "quick-show-fragment-value").textContent = `${fragment}%`;
+      this.requireInput(root, "quick-show-sound").value = String(level);
+      this.requireElement(root, "quick-show-sound-value").textContent = `${level}%`;
+      this.requireInput(root, "quick-show-sound-enabled").checked = this.shaderEventSoundControls.enabled;
+      this.requireInput(root, "quick-show-rhythm").value = String(rhythmScatter);
+      this.requireElement(root, "quick-show-rhythm-value").textContent = `${rhythmScatter}%`;
+      this.requireInput(root, "quick-show-phrase").value = String(phraseEvolution);
+      this.requireElement(root, "quick-show-phrase-value").textContent = `${phraseEvolution}%`;
+    };
+    this.requireElement(root, "quick-audiovisual-show").addEventListener("click", () => {
+      const bpm = this.requireInput(root, "quick-show-bpm").value;
+      const fragment = this.requireInput(root, "quick-show-fragment").value;
+      const sound = this.requireInput(root, "quick-show-sound").value;
+      const rhythm = this.requireInput(root, "quick-show-rhythm").value;
+      const phrase = this.requireInput(root, "quick-show-phrase").value;
+      this.startAudiovisualShow(root);
+      this.requireInput(root, "quick-show-bpm").value = bpm;
+      this.requireInput(root, "quick-show-bpm").dispatchEvent(new Event("input", { bubbles: true }));
+      this.requireInput(root, "quick-show-fragment").value = fragment;
+      this.requireInput(root, "quick-show-fragment").dispatchEvent(new Event("input", { bubbles: true }));
+      this.requireInput(root, "quick-show-rhythm").value = rhythm;
+      this.requireInput(root, "quick-show-rhythm").dispatchEvent(new Event("input", { bubbles: true }));
+      this.requireInput(root, "quick-show-phrase").value = phrase;
+      this.requireInput(root, "quick-show-phrase").dispatchEvent(new Event("input", { bubbles: true }));
+      this.requireInput(root, "quick-show-sound").value = sound;
+      this.requireInput(root, "quick-show-sound-enabled").checked = true;
+      this.requireInput(root, "quick-show-sound").dispatchEvent(new Event("input", { bubbles: true }));
+      this.setAuthoringStatus(
+        `Audiovisual show running · P1–P5 · ${Math.round(Number(bpm))} BPM · beat-cut skins + sound`,
+        false,
+      );
+    });
+    this.requireInput(root, "quick-show-bpm").addEventListener("input", (event) => {
+      const bpm = Number((event.target as HTMLInputElement).value);
+      this.updateLivingSkinControls({ bpm });
+      root.querySelectorAll<HTMLInputElement>('[data-living-skin-control="bpm"]').forEach((input) => {
+        input.value = String(bpm);
+        input.parentElement?.querySelector("output")?.replaceChildren(String(Math.round(bpm)));
+      });
+      this.requireElement(root, "quick-show-bpm-value").textContent = String(Math.round(bpm));
+    });
+    this.requireInput(root, "quick-show-fragment").addEventListener("input", (event) => {
+      const amount = Number((event.target as HTMLInputElement).value) / 100;
+      this.updateLivingSkinControls({
+        enabled: amount > 0.02,
+        variety: 0.42 + amount * 0.58,
+        glitch: 0.12 + amount * 0.82,
+        flashRate: 0.28 + amount * 0.68,
+        patchCount: Math.round(3 + amount * 9),
+      });
+      this.requireInput(root, "living-skins-enabled").checked = this.livingSkinControls.enabled;
+      root.querySelectorAll<HTMLInputElement>("[data-living-skin-control]").forEach((input) => {
+        const id = input.dataset.livingSkinControl as keyof LivingSkinControls;
+        const value = this.livingSkinControls[id];
+        if (typeof value !== "number") return;
+        input.value = String(value);
+        input.parentElement?.querySelector("output")?.replaceChildren(
+          id === "patchCount" || id === "bpm" ? String(Math.round(value)) : value.toFixed(2),
+        );
+      });
+      this.requireElement(root, "quick-show-fragment-value").textContent = `${Math.round(amount * 100)}%`;
+    });
+    this.requireInput(root, "quick-show-rhythm").addEventListener("input", (event) => {
+      const amount = Number((event.target as HTMLInputElement).value) / 100;
+      this.updateLivingSkinControls({ eventHold: amount });
+      root.querySelectorAll<HTMLInputElement>('[data-living-skin-control="eventHold"]').forEach((input) => {
+        input.value = String(amount);
+        input.parentElement?.querySelector("output")?.replaceChildren(amount.toFixed(2));
+      });
+      this.requireElement(root, "quick-show-rhythm-value").textContent = `${Math.round(amount * 100)}%`;
+    });
+    this.requireInput(root, "quick-show-phrase").addEventListener("input", (event) => {
+      const amount = Number((event.target as HTMLInputElement).value) / 100;
+      this.updateLivingSkinControls({ phraseEvolution: amount });
+      root.querySelectorAll<HTMLInputElement>('[data-living-skin-control="phraseEvolution"]').forEach((input) => {
+        input.value = String(amount);
+        input.parentElement?.querySelector("output")?.replaceChildren(amount.toFixed(2));
+      });
+      this.requireElement(root, "quick-show-phrase-value").textContent = `${Math.round(amount * 100)}%`;
+    });
+    const updateQuickSound = (): void => {
+      const enabled = this.requireInput(root, "quick-show-sound-enabled").checked;
+      const level = Number(this.requireInput(root, "quick-show-sound").value) / 100;
+      this.shaderEventSoundControls = normaliseShaderEventSoundControls({
+        ...this.shaderEventSoundControls,
+        enabled,
+        level,
+      });
+      this.requireInput(root, "shader-event-sound-enabled").checked = enabled;
+      this.requireInput(root, "shader-event-sound-level").value = String(level);
+      this.requireElement(root, "shader-event-sound-level-value").textContent = `${Math.round(level * 100)}%`;
+      this.requireElement(root, "quick-show-sound-value").textContent = `${Math.round(level * 100)}%`;
+      this.callbacks.onShaderEventSoundControls(this.shaderEventSoundControls);
+    };
+    this.requireInput(root, "quick-show-sound-enabled").addEventListener("change", updateQuickSound);
+    this.requireInput(root, "quick-show-sound").addEventListener("input", updateQuickSound);
+    syncQuickShowControls();
 
     this.requireElement(root, "output-inspector-close").addEventListener("click", () => {
       this.closeOutputInspector();
@@ -962,6 +1465,9 @@ export class StudioUI {
     });
     this.elements.playButton.addEventListener("click", () => {
       this.callbacks.onPlayToggle();
+    });
+    this.requireElement(root, "audiovisual-show-button").addEventListener("click", () => {
+      this.startAudiovisualShow(root);
     });
     this.requireElement(root, "reset-button").addEventListener("click", () => {
       this.callbacks.onReset();
@@ -1035,20 +1541,95 @@ export class StudioUI {
     const warehouseEnabled = this.elements.warehouseEnabled as HTMLInputElement;
     const peopleEnabled = this.elements.peopleEnabled as HTMLInputElement;
     const environmentLighting = this.elements.environmentLighting as HTMLInputElement;
+    const environmentWarmth = this.elements.environmentWarmth as HTMLInputElement;
+    const concretePatina = this.elements.concretePatina as HTMLInputElement;
     const updateEnvironment = () => {
       const lighting = Number(environmentLighting.value);
+      const warmth = Number(environmentWarmth.value);
+      const patina = Number(concretePatina.value);
       peopleEnabled.disabled = !warehouseEnabled.checked;
       this.elements.environmentLightingValue.textContent = `${Math.round(lighting * 100)}%`;
+      this.elements.environmentWarmthValue.textContent = `${Math.round(warmth * 100)}%`;
+      this.elements.concretePatinaValue.textContent = `${Math.round(patina * 100)}%`;
       this.environmentControls = {
         warehouseEnabled: warehouseEnabled.checked,
         peopleEnabled: peopleEnabled.checked,
         lighting,
+        warmth,
+        concretePatina: patina,
       };
       this.callbacks.onEnvironmentControls(this.environmentControls);
     };
     warehouseEnabled.addEventListener("change", updateEnvironment);
     peopleEnabled.addEventListener("change", updateEnvironment);
     environmentLighting.addEventListener("input", updateEnvironment);
+    environmentWarmth.addEventListener("input", updateEnvironment);
+    concretePatina.addEventListener("input", updateEnvironment);
+    this.requireSelect(root, "environment-lighting-preset").addEventListener("change", (event) => {
+      const preset = ENVIRONMENT_LIGHTING_PRESETS[(event.target as HTMLSelectElement).value as keyof typeof ENVIRONMENT_LIGHTING_PRESETS];
+      if (!preset) return;
+      environmentLighting.value = String(preset.lighting);
+      environmentWarmth.value = String(preset.warmth);
+      updateEnvironment();
+    });
+    const refreshPhysics = () => {
+      const values = new Map(
+        Array.from(root.querySelectorAll<HTMLInputElement>("[data-balloon-physics]")).map((input) => {
+          input.parentElement?.querySelector("output")?.replaceChildren(Number(input.value).toFixed(2));
+          return [input.dataset.balloonPhysics ?? "", Number(input.value)];
+        }),
+      );
+      this.balloonPhysicsControls = {
+        centerDrift: values.get("center-drift") ?? 0,
+        verticalBreathing: values.get("vertical-breathing") ?? 0,
+        squashStretch: values.get("squash-stretch") ?? 0,
+        lowerBulge: values.get("lower-bulge") ?? 0,
+        asymmetry: values.get("asymmetry") ?? 0,
+        damping: values.get("damping") ?? 0,
+        mass: values.get("mass") ?? 0,
+        jetTurbulence: values.get("jet-turbulence") ?? 0,
+      };
+      this.callbacks.onBalloonPhysicsControls(this.balloonPhysicsControls);
+    };
+    root.querySelectorAll<HTMLInputElement>("[data-balloon-physics]").forEach((input) =>
+      input.addEventListener("input", refreshPhysics),
+    );
+    const materialProfile = this.requireSelect(root, "balloon-material-profile");
+    const refreshMaterial = () => {
+      const values = new Map(
+        Array.from(root.querySelectorAll<HTMLInputElement>("[data-material-control]")).map((input) => {
+          input.parentElement?.querySelector("output")?.replaceChildren(Number(input.value).toFixed(2));
+          return [input.dataset.materialControl ?? "", Number(input.value)];
+        }),
+      );
+      this.projectionMaterialControls = {
+        profile: materialProfile.value as ProjectionMaterialControls["profile"],
+        reflectance: values.get("reflectance") ?? 0,
+        translucency: values.get("translucency") ?? 0,
+        internalBleed: values.get("internal-bleed") ?? 0,
+        roughness: values.get("roughness") ?? 0,
+      };
+      this.callbacks.onProjectionMaterialControls(this.projectionMaterialControls);
+    };
+    root.querySelectorAll<HTMLInputElement>("[data-material-control]").forEach((input) =>
+      input.addEventListener("input", () => {
+        materialProfile.value = "custom";
+        refreshMaterial();
+      }),
+    );
+    materialProfile.addEventListener("change", () => {
+      const profile = materialControlsForProfile(materialProfile.value as ProjectionMaterialControls["profile"]);
+      root.querySelectorAll<HTMLInputElement>("[data-material-control]").forEach((input) => {
+        const key = input.dataset.materialControl === "internal-bleed"
+          ? "internalBleed"
+          : input.dataset.materialControl as keyof ProjectionMaterialControls;
+        const value = profile[key];
+        if (typeof value === "number") input.value = String(value);
+      });
+      refreshMaterial();
+    });
+    refreshPhysics();
+    refreshMaterial();
     const overlapInput = this.requireInput(root, "calibration-overlap");
     const featherInput = this.requireInput(root, "calibration-feather");
     const blackInput = this.requireInput(root, "calibration-black-level");
@@ -1068,10 +1649,71 @@ export class StudioUI {
     [overlapInput, featherInput, blackInput].forEach((input) =>
       input.addEventListener("input", refreshCalibrationSettings),
     );
-    this.requireElement(root, "run-auto-calibration").addEventListener("click", () => {
-      refreshCalibrationSettings();
-      this.callbacks.onProjectionCalibration(this.projectionCalibrationSettings);
+    const calibrationStages = [
+      ["Lock five portrait outputs", "Confirm every projector is secured on its side at 90 degrees and the computer reports a portrait raster."],
+      ["Mark six sphere references", "Count six rehearsal points. No camera correspondences are recorded."],
+      ["Rehearse structured-light stage", "No patterns are captured here. This is a simulated workflow."],
+      ["Generate example calibration", "Create deterministic rehearsal camera and warp values."],
+      ["Build stitch and blend masks", "Normalise overlaps, feather curves and black levels."],
+      ["Validate the vertical hover envelope", "Run the portrait seam grid from minimum to maximum fan height."],
+    ] as const;
+    const refreshCalibrationWizard = () => {
+      root.querySelectorAll<HTMLElement>("#calibration-stages li").forEach((item, index) => {
+        item.dataset.complete = String(this.calibrationStep > index);
+        item.dataset.active = String(this.calibrationStep === index);
+        const state = item.querySelector("strong");
+        if (state) state.textContent = this.calibrationStep > index ? "READY" : this.calibrationStep === index ? "ACTIVE" : "WAIT";
+      });
+      const active = Math.min(Math.max(this.calibrationStep, 0), calibrationStages.length - 1);
+      this.requireElement(root, "calibration-step-title").textContent = this.calibrationStep < 0 ? "Start with locked hardware" : calibrationStages[active][0];
+      this.requireElement(root, "calibration-step-help").textContent = this.calibrationStep < 0 ? "The wizard will guide each physical stage and keep simulation clearly labelled." : calibrationStages[active][1];
+      this.requireElement(root, "calibration-point-count").textContent = `${this.calibrationPointCount} / 6 alignment points`;
+      (this.requireElement(root, "calibration-back") as HTMLButtonElement).disabled = this.calibrationStep <= 0;
+      (this.requireElement(root, "calibration-capture-point") as HTMLButtonElement).disabled = this.calibrationStep !== 1;
+      const next = this.requireElement(root, "run-auto-calibration") as HTMLButtonElement;
+      next.textContent = this.calibrationStep < 0 ? "Start simulated rehearsal" : this.calibrationStep >= 5 ? "Solve and validate" : "Next stage";
+      next.disabled = this.calibrationStep === 1 && this.calibrationPointCount < 6;
+    };
+    this.requireElement(root, "calibration-capture-point").addEventListener("click", () => {
+      this.calibrationPointCount = Math.min(12, this.calibrationPointCount + 1);
+      refreshCalibrationWizard();
     });
+    this.requireElement(root, "calibration-back").addEventListener("click", () => {
+      this.calibrationStep = Math.max(0, this.calibrationStep - 1);
+      refreshCalibrationWizard();
+    });
+    this.requireElement(root, "run-auto-calibration").addEventListener("click", () => {
+      if (this.calibrationStep < 0) this.calibrationStep = 0;
+      else if (this.calibrationStep < 5) this.calibrationStep += 1;
+      else {
+        refreshCalibrationSettings();
+        this.callbacks.onProjectionCalibration(this.projectionCalibrationSettings);
+        this.calibrationStep = 6;
+      }
+      refreshCalibrationWizard();
+    });
+    this.requireElement(root, "export-calibration").addEventListener("click", () => {
+      if (!this.lastProjectionCalibrationResult) return;
+      const blob = new Blob([JSON.stringify(this.lastProjectionCalibrationResult, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `orbital-projection-calibration-${this.lastProjectionCalibrationResult.mode}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+    });
+    refreshCalibrationWizard();
+    const outputResolution = this.requireSelect(root, "output-resolution");
+    const outputRefresh = this.requireSelect(root, "output-refresh");
+    const refreshOutputRouting = () => {
+      const [width, height] = outputResolution.value.split("x").map(Number);
+      this.outputResolution = { width, height, refreshHz: Number(outputRefresh.value) };
+    };
+    outputResolution.addEventListener("change", refreshOutputRouting);
+    outputRefresh.addEventListener("change", refreshOutputRouting);
+    root.querySelectorAll<HTMLButtonElement>("[data-open-output-window]").forEach((button) =>
+      button.addEventListener("click", () => this.openOutputWindow(button.dataset.openOutputWindow as MappingViewMode)),
+    );
     this.requireElement(root, "open-installation-guide").addEventListener("click", () => {
       activateWorkspace("guide");
     });
@@ -1112,6 +1754,48 @@ export class StudioUI {
         this.callbacks.onProjectionPattern(this.projectionPattern);
       },
     );
+    const updateInstallationRig = () => {
+      this.installationRigControls = normaliseInstallationRigControls({
+        mode: this.requireSelect(root, "installation-rig-mode").value as InstallationRigControls["mode"],
+        prototypeProjectorIndex: Number(this.requireSelect(root, "installation-prototype-head").value),
+        projectorOpticId: this.requireSelect(root, "installation-projector-optic").value,
+        cameraLensId: this.requireSelect(root, "installation-camera-lens").value,
+        nirIlluminatorId: this.requireSelect(root, "installation-nir-light").value,
+        cameraSeparationM: Number(this.requireInput(root, "installation-camera-separation").value),
+        hazeDensity: Number(this.requireInput(root, "installation-haze").value),
+        showTruss: this.requireInput(root, "installation-show-truss").checked,
+        showCameras: this.requireInput(root, "installation-show-cameras").checked,
+        showNir: this.requireInput(root, "installation-show-nir").checked,
+      });
+      const summary = installationRigSummary(createDefaultProjectionRig(), this.installationRigControls);
+      this.requireSelect(root, "installation-prototype-head").disabled =
+        this.installationRigControls.mode === "production-5";
+      this.requireSelect(root, "quick-rig-mode").value = this.installationRigControls.mode;
+      this.requireElement(root, "quick-rig-status").textContent =
+        this.installationRigControls.mode === "production-5"
+          ? "P1–P5 ACTIVE"
+          : `P${this.installationRigControls.prototypeProjectorIndex + 1} ACTIVE · P${[1, 2, 3, 4, 5].filter((value) => value !== this.installationRigControls.prototypeProjectorIndex + 1).join("/")} STANDBY`;
+      this.requireElement(root, "installation-rig-counts").textContent =
+        `${summary.activeProjectors}P · ${summary.activeCameras}C · ${summary.activeNir} NIR`;
+      this.requireElement(root, "installation-distance").textContent = `${summary.firstDistanceM.toFixed(1)} m`;
+      this.requireElement(root, "installation-distance-label").textContent =
+        `${this.installationRigControls.mode === "prototype-1" ? `P${this.installationRigControls.prototypeProjectorIndex + 1}` : "P1"} optical path`;
+      this.requireElement(root, "installation-haze-value").textContent = `${Math.round(this.installationRigControls.hazeDensity * 100)}%`;
+      this.requireElement(root, "installation-camera-separation-value").textContent = `${this.installationRigControls.cameraSeparationM.toFixed(2)} m`;
+      this.callbacks.onInstallationRigControls(this.installationRigControls);
+    };
+    ["installation-rig-mode", "installation-prototype-head", "installation-projector-optic", "installation-camera-lens",
+      "installation-nir-light", "installation-camera-separation", "installation-haze",
+      "installation-show-truss", "installation-show-cameras", "installation-show-nir"].forEach((id) => {
+      this.requireElement(root, id).addEventListener("input", updateInstallationRig);
+      this.requireElement(root, id).addEventListener("change", updateInstallationRig);
+    });
+    this.requireSelect(root, "quick-rig-mode").addEventListener("change", (event) => {
+      this.requireSelect(root, "installation-rig-mode").value =
+        (event.target as HTMLSelectElement).value;
+      updateInstallationRig();
+    });
+    updateInstallationRig();
     this.requireElement(root, "seam-test-toggle").addEventListener("click", () => {
       this.projectionPattern = this.projectionPattern === "seam" ? "authored" : "seam";
       this.requireSelect(root, "projection-pattern").value = this.projectionPattern;
@@ -1309,6 +1993,111 @@ export class StudioUI {
     this.elements.shaderUpdate.addEventListener("click", () => {
       this.updateSelectedPreset();
     });
+    this.requireElement(root, "export-render-project").addEventListener("click", () => {
+      this.callbacks.onExportRenderProject({
+        shaderPreset: this.currentShaderPreset,
+        shaderLook: this.shaderLookControls,
+        surfaceRegionsEnabled: this.surfaceRegionsEnabled,
+        surfaceRegions: this.surfaceRegions,
+        previewExposure: this.previewExposure,
+        livingSkins: this.livingSkinControls,
+        installationRig: this.installationRigControls,
+        shaderEventSound: this.shaderEventSoundControls,
+      });
+    });
+    this.requireInput(root, "living-skins-enabled").addEventListener("change", (event) => {
+      this.updateLivingSkinControls({ enabled: (event.target as HTMLInputElement).checked });
+    });
+    this.requireSelect(root, "living-skin-sequence-mode").addEventListener("change", (event) => {
+      this.updateLivingSkinControls({
+        sequenceMode: (event.target as HTMLSelectElement).value as LivingSkinSequenceMode,
+      });
+    });
+    root.querySelectorAll<HTMLInputElement>("[data-living-skin-control]").forEach((input) => {
+      input.addEventListener("input", () => {
+        const id = input.dataset.livingSkinControl as keyof LivingSkinControls;
+        this.updateLivingSkinControls({ [id]: Number(input.value) });
+        input.parentElement?.querySelector("output")?.replaceChildren(
+          id === "patchCount" || id === "bpm"
+            ? String(Math.round(Number(input.value)))
+            : Number(input.value).toFixed(2),
+        );
+        syncQuickShowControls();
+      });
+    });
+    const updateShaderEventSound = () => {
+      this.shaderEventSoundControls = normaliseShaderEventSoundControls({
+        enabled: this.requireInput(root, "shader-event-sound-enabled").checked,
+        palette: this.requireSelect(root, "shader-event-sound-palette").value as ShaderEventSoundControls["palette"],
+        density: Number(this.requireInput(root, "shader-event-sound-density").value),
+        reverb: Number(this.requireInput(root, "shader-event-sound-reverb").value),
+        level: Number(this.requireInput(root, "shader-event-sound-level").value),
+      });
+      for (const id of ["density", "reverb", "level"] as const) {
+        this.requireElement(root, `shader-event-sound-${id}-value`).textContent =
+          `${Math.round(this.shaderEventSoundControls[id] * 100)}%`;
+      }
+      this.callbacks.onShaderEventSoundControls(this.shaderEventSoundControls);
+      syncQuickShowControls();
+    };
+    ["shader-event-sound-enabled", "shader-event-sound-palette", "shader-event-sound-density",
+      "shader-event-sound-reverb", "shader-event-sound-level"].forEach((id) => {
+      this.requireElement(root, id).addEventListener("input", updateShaderEventSound);
+      this.requireElement(root, id).addEventListener("change", updateShaderEventSound);
+    });
+    this.requireElement(root, "shader-event-sound-audition").addEventListener("click", () => {
+      this.callbacks.onAuditionShaderEvent();
+    });
+    const updateCinematicScene = () => {
+      this.cinematicSceneControls = normaliseCinematicSceneControls({
+        cameraTourEnabled: this.requireInput(root, "cinematic-camera-tour").checked,
+        cameraA: this.requireSelect(root, "cinematic-camera-a").value as SocialCameraPreset,
+        cameraB: this.requireSelect(root, "cinematic-camera-b").value as SocialCameraPreset,
+        cameraC: this.requireSelect(root, "cinematic-camera-c").value as SocialCameraPreset,
+        transitionSeconds: Number(this.requireInput(root, "cinematic-camera-duration").value),
+        holdSeconds: Number(this.requireInput(root, "cinematic-camera-hold").value),
+        projectorBodies: this.requireInput(root, "cinematic-projector-bodies").checked,
+        projectorThrows: this.requireInput(root, "cinematic-projector-throws").checked,
+        technicalGuides: this.requireInput(root, "cinematic-technical-guides").checked,
+        fanRig: this.requireInput(root, "cinematic-fan-rig").checked,
+        speakerRig: this.requireInput(root, "cinematic-speaker-rig").checked,
+        roomArchitecture: this.requireInput(root, "cinematic-room-architecture").checked,
+      });
+      this.requireElement(root, "cinematic-camera-duration-value").textContent =
+        `${this.cinematicSceneControls.transitionSeconds.toFixed(0)} sec`;
+      this.requireElement(root, "cinematic-camera-hold-value").textContent =
+        `${this.cinematicSceneControls.holdSeconds.toFixed(0)} sec`;
+      this.callbacks.onCinematicSceneControls(this.cinematicSceneControls);
+      this.setAuthoringStatus(
+        this.cinematicSceneControls.cameraTourEnabled
+          ? "Smooth three-angle camera tour active"
+          : "Manual camera control active",
+        false,
+      );
+    };
+    ["cinematic-camera-tour", "cinematic-camera-a", "cinematic-camera-b",
+      "cinematic-camera-c", "cinematic-camera-duration", "cinematic-camera-hold",
+      "cinematic-projector-bodies", "cinematic-projector-throws", "cinematic-technical-guides",
+      "cinematic-fan-rig", "cinematic-speaker-rig", "cinematic-room-architecture"].forEach((id) => {
+      this.requireElement(root, id).addEventListener("input", updateCinematicScene);
+      this.requireElement(root, id).addEventListener("change", updateCinematicScene);
+    });
+    root.querySelectorAll<HTMLButtonElement>("[data-camera-focus]").forEach((button) => {
+      button.addEventListener("click", () => {
+        const slot = button.dataset.cameraFocus as "a" | "b" | "c";
+        const camera = this.requireSelect(root, `cinematic-camera-${slot}`).value as SocialCameraPreset;
+        this.requireInput(root, "cinematic-camera-tour").checked = false;
+        updateCinematicScene();
+        this.callbacks.onCinematicCameraFocus(camera);
+        this.setAuthoringStatus(`Moving smoothly to shot ${slot.toUpperCase()}`, false);
+      });
+    });
+    this.requireElement(root, "capture-social-still").addEventListener("click", () => {
+      this.callbacks.onCaptureSocialStill(this.selectedSocialAspect(), this.selectedSocialCamera());
+    });
+    this.requireElement(root, "record-social-clip").addEventListener("click", () => {
+      this.callbacks.onRecordSocialClip(this.selectedSocialAspect(), this.selectedSocialCamera());
+    });
     this.elements.regionAssignments.addEventListener("click", (event) => {
       const target = event.target;
       if (!(target instanceof HTMLElement)) {
@@ -1371,7 +2160,7 @@ export class StudioUI {
         this.setAuthoringStatus(`P${modeIndex + 1} ${nextMode === "post" ? "post-mapping" : "pre-mapping source"} view selected`, false);
         const label = modeButton.closest(".output-tile")?.querySelector<HTMLElement>("small");
         const look = document.getElementById("output-grid")?.dataset.shaderLook ?? "Current shader";
-        if (label) label.textContent = `${look} · ${nextMode}-mapping · live`;
+        if (label) label.textContent = `${look} · portrait · ${nextMode}-mapping · live`;
         this.refreshProjectorOutputFrame(modeIndex);
         return;
       }
@@ -1668,12 +2457,50 @@ export class StudioUI {
     const warehouse = this.elements.warehouseEnabled as HTMLInputElement;
     const people = this.elements.peopleEnabled as HTMLInputElement;
     const lighting = this.elements.environmentLighting as HTMLInputElement;
+    const warmth = this.elements.environmentWarmth as HTMLInputElement;
+    const patina = this.elements.concretePatina as HTMLInputElement;
     warehouse.checked = saved.environment.warehouseEnabled;
     people.checked = saved.environment.peopleEnabled;
     people.disabled = !warehouse.checked;
     lighting.value = String(saved.environment.lighting);
+    warmth.value = String(saved.environment.warmth);
+    patina.value = String(saved.environment.concretePatina);
     this.elements.environmentLightingValue.textContent = `${Math.round(saved.environment.lighting * 100)}%`;
+    this.elements.environmentWarmthValue.textContent = `${Math.round(saved.environment.warmth * 100)}%`;
+    this.elements.concretePatinaValue.textContent = `${Math.round(saved.environment.concretePatina * 100)}%`;
     this.callbacks.onEnvironmentControls(saved.environment);
+
+    this.balloonPhysicsControls = { ...saved.balloonPhysics };
+    const physicsValues: Record<string, number> = {
+      "center-drift": saved.balloonPhysics.centerDrift,
+      "vertical-breathing": saved.balloonPhysics.verticalBreathing,
+      "squash-stretch": saved.balloonPhysics.squashStretch,
+      "lower-bulge": saved.balloonPhysics.lowerBulge,
+      asymmetry: saved.balloonPhysics.asymmetry,
+      damping: saved.balloonPhysics.damping,
+      mass: saved.balloonPhysics.mass,
+      "jet-turbulence": saved.balloonPhysics.jetTurbulence,
+    };
+    document.querySelectorAll<HTMLInputElement>("[data-balloon-physics]").forEach((input) => {
+      input.value = String(physicsValues[input.dataset.balloonPhysics ?? ""] ?? 0);
+      input.parentElement?.querySelector("output")?.replaceChildren(Number(input.value).toFixed(2));
+    });
+    this.callbacks.onBalloonPhysicsControls(saved.balloonPhysics);
+
+    this.projectionMaterialControls = { ...saved.projectionMaterial };
+    const profile = document.getElementById("balloon-material-profile") as HTMLSelectElement | null;
+    if (profile) profile.value = saved.projectionMaterial.profile;
+    const materialValues: Record<string, number> = {
+      reflectance: saved.projectionMaterial.reflectance,
+      translucency: saved.projectionMaterial.translucency,
+      "internal-bleed": saved.projectionMaterial.internalBleed,
+      roughness: saved.projectionMaterial.roughness,
+    };
+    document.querySelectorAll<HTMLInputElement>("[data-material-control]").forEach((input) => {
+      input.value = String(materialValues[input.dataset.materialControl ?? ""] ?? 0);
+      input.parentElement?.querySelector("output")?.replaceChildren(Number(input.value).toFixed(2));
+    });
+    this.callbacks.onProjectionMaterialControls(saved.projectionMaterial);
   }
 
   private updateSelectedPreset(): void {
@@ -1688,6 +2515,8 @@ export class StudioUI {
     const warehouseEnabled = (this.elements.warehouseEnabled as HTMLInputElement).checked;
     const peopleEnabled = (this.elements.peopleEnabled as HTMLInputElement).checked;
     const lighting = Number((this.elements.environmentLighting as HTMLInputElement).value);
+    const warmth = Number((this.elements.environmentWarmth as HTMLInputElement).value);
+    const concretePatina = Number((this.elements.concretePatina as HTMLInputElement).value);
     try {
       const updated = createStudioPresetOverride({
         cardId: card.id,
@@ -1699,7 +2528,11 @@ export class StudioUI {
           warehouseEnabled,
           peopleEnabled,
           lighting,
+          warmth,
+          concretePatina,
         },
+        balloonPhysics: this.balloonPhysicsControls,
+        projectionMaterial: this.projectionMaterialControls,
       });
       this.presetOverrides = {
         ...this.presetOverrides,
@@ -1707,7 +2540,7 @@ export class StudioUI {
       };
       writeStudioPresetOverrides(this.presetStorage, this.presetOverrides);
       this.setAuthoringStatus(
-        `${card.name} updated · shader, appearance, scene and fan speed saved`,
+        `${card.name} updated · shader, material, balloon physics, scene and fan speed saved`,
         false,
       );
     } catch (error) {
@@ -1716,6 +2549,87 @@ export class StudioUI {
         true,
       );
     }
+  }
+
+  private updateLivingSkinControls(edit: Partial<LivingSkinControls>): void {
+    this.livingSkinControls = normaliseLivingSkinControls({
+      ...this.livingSkinControls,
+      ...edit,
+    });
+    this.callbacks.onLivingSkinControls(this.livingSkinControls);
+    this.setAuthoringStatus(
+      this.livingSkinControls.enabled
+        ? `${this.livingSkinControls.patchCount} living shader skins active`
+        : "Living shader skins disabled",
+      false,
+    );
+  }
+
+  private startAudiovisualShow(root: HTMLElement): void {
+    this.requireSelect(root, "quick-rig-mode").value = "production-5";
+    this.requireSelect(root, "installation-rig-mode").value = "production-5";
+    this.requireSelect(root, "installation-rig-mode").dispatchEvent(new Event("change"));
+
+    this.requireInput(root, "living-skins-enabled").checked = true;
+    this.requireSelect(root, "living-skin-sequence-mode").value = "eruption";
+    this.updateLivingSkinControls({
+      enabled: true,
+      bpm: 112,
+      flashRate: 0.82,
+      glitch: 0.74,
+      variety: 0.9,
+      patchCount: 11,
+      eventHold: 0.82,
+      phraseEvolution: 0.88,
+      attackSharpness: 0.86,
+    });
+    root.querySelectorAll<HTMLInputElement>("[data-living-skin-control]").forEach((input) => {
+      const id = input.dataset.livingSkinControl as keyof LivingSkinControls;
+      const value = this.livingSkinControls[id];
+      if (typeof value !== "number") return;
+      input.value = String(value);
+      input.parentElement?.querySelector("output")?.replaceChildren(
+        id === "patchCount" || id === "bpm" ? String(Math.round(value)) : value.toFixed(2),
+      );
+    });
+
+    this.requireInput(root, "shader-event-sound-enabled").checked = true;
+    this.requireSelect(root, "shader-event-sound-palette").value = "mixed";
+    this.shaderEventSoundControls = normaliseShaderEventSoundControls({
+      enabled: true,
+      palette: "mixed",
+      density: 0.78,
+      reverb: 0.76,
+      level: 0.62,
+    });
+    for (const id of ["density", "reverb", "level"] as const) {
+      const input = this.requireInput(root, `shader-event-sound-${id}`);
+      input.value = String(this.shaderEventSoundControls[id]);
+      this.requireElement(root, `shader-event-sound-${id}-value`).textContent =
+        `${Math.round(this.shaderEventSoundControls[id] * 100)}%`;
+    }
+    this.callbacks.onShaderEventSoundControls(this.shaderEventSoundControls);
+    this.requireInput(root, "quick-show-bpm").value = "112";
+    this.requireElement(root, "quick-show-bpm-value").textContent = "112";
+    this.requireInput(root, "quick-show-fragment").value = "82";
+    this.requireElement(root, "quick-show-fragment-value").textContent = "82%";
+    this.requireInput(root, "quick-show-rhythm").value = "82";
+    this.requireElement(root, "quick-show-rhythm-value").textContent = "82%";
+    this.requireInput(root, "quick-show-phrase").value = "88";
+    this.requireElement(root, "quick-show-phrase-value").textContent = "88%";
+    this.requireInput(root, "quick-show-sound-enabled").checked = true;
+    this.requireInput(root, "quick-show-sound").value = "62";
+    this.requireElement(root, "quick-show-sound-value").textContent = "62%";
+    this.callbacks.onAudiovisualShow();
+    this.setAuthoringStatus("Audiovisual show running · P1–P5 · 112 BPM · beat-cut skins + sound", false);
+  }
+
+  private selectedSocialAspect(): SocialAspectPreset {
+    return this.requireSelect(document, "social-aspect").value as SocialAspectPreset;
+  }
+
+  private selectedSocialCamera(): SocialCameraPreset {
+    return this.requireSelect(document, "social-camera").value as SocialCameraPreset;
   }
 
   private restoreRecentShaderCard(card: ShaderPresetCard): void {
@@ -1777,9 +2691,10 @@ export class StudioUI {
       : `<span class="shader-recent-label">RECENT</span>${cards
         .map(
           (card) => `
-            <button type="button" data-recent-shader-id="${card.id}" data-recent-family="${card.shader.family}" data-recent-variant="${card.variant}" aria-label="Restore ${escapeHtml(card.name)}, ${card.shader.family} shader" aria-pressed="${card.id === this.selectedCatalogCardId}"><span class="shader-recent-preview shader-preview-${card.shader.family} shader-preview-${card.shader.id}" style="--shader-seed:${card.preset.seed % 97}" aria-hidden="true"></span><span class="shader-recent-copy"><strong>${escapeHtml(card.name)}</strong><small>${escapeHtml(card.shader.family)} · ${card.variant.toString().padStart(2, "0")}</small></span></button>`,
+            <button type="button" data-recent-shader-id="${card.id}" data-recent-family="${card.shader.family}" data-recent-variant="${card.variant}" aria-label="Restore ${escapeHtml(card.name)}, ${card.shader.family} shader" aria-pressed="${card.id === this.selectedCatalogCardId}"><canvas class="shader-recent-preview shader-preview-${card.shader.family} shader-preview-${card.shader.id}" data-shader-thumbnail="${card.id}" width="180" height="120" style="--shader-seed:${card.preset.seed % 97}" aria-hidden="true"></canvas><span class="shader-recent-copy"><strong>${escapeHtml(card.name)}</strong><small>${escapeHtml(card.shader.family)} · ${card.variant.toString().padStart(2, "0")}</small></span></button>`,
         )
         .join("")}`;
+    this.renderVisibleShaderThumbnails();
   }
 
   private syncShaderQuickFilters(root: HTMLElement): void {
@@ -1845,13 +2760,35 @@ export class StudioUI {
         .map(
           (card) => `
           <button type="button" class="shader-card${card.id === this.selectedCatalogCardId ? " is-selected" : ""}" data-shader-card-id="${card.id}" aria-label="${card.name}, ${card.shader.family} shader" aria-pressed="${card.id === this.selectedCatalogCardId}">
-            <span class="shader-card-preview shader-preview-${card.shader.family} shader-preview-${card.shader.id}" style="--shader-seed:${card.preset.seed % 97}"></span>
+            <canvas class="shader-card-preview shader-preview-${card.shader.family} shader-preview-${card.shader.id}" data-shader-thumbnail="${card.id}" width="180" height="120" style="--shader-seed:${card.preset.seed % 97}" aria-label="${escapeHtml(card.name)} rendered on the balloon"></canvas>
             <span class="shader-card-name">${card.name}</span>
             <span class="shader-card-meta">${card.shader.family} · ${card.shader.gpuCost}</span>
           </button>`,
         )
         .join("");
     this.renderShaderVariantNavigator();
+    this.renderVisibleShaderThumbnails();
+  }
+
+  private renderVisibleShaderThumbnails(): void {
+    if (!this.shaderThumbnailRenderer) return;
+    const generation = ++this.shaderThumbnailGeneration;
+    const canvases = Array.from(
+      document.querySelectorAll<HTMLCanvasElement>("canvas[data-shader-thumbnail]:not([data-rendered='true'])"),
+    );
+    let index = 0;
+    const renderBatch = () => {
+      if (generation !== this.shaderThumbnailGeneration || !this.shaderThumbnailRenderer) return;
+      for (let count = 0; count < 6 && index < canvases.length; count += 1, index += 1) {
+        const canvas = canvases[index];
+        const card = SHADER_PRESET_CATALOG.find(
+          (candidate) => candidate.id === canvas.dataset.shaderThumbnail,
+        );
+        if (card && canvas.isConnected) this.shaderThumbnailRenderer(card.preset, canvas);
+      }
+      if (index < canvases.length) window.setTimeout(renderBatch, 16);
+    };
+    renderBatch();
   }
 
   private renderShaderVariantNavigator(): void {
@@ -2018,11 +2955,12 @@ export class StudioUI {
     const selectedLook = outputGrid.dataset.shaderLook ?? "Current shader";
     const shaderFamily = outputGrid.dataset.shaderFamily ?? "neutral";
     const label = mappingViewLabel(view);
-    const outputMode = sourceCanvas.dataset.outputMode === "pre" ? "pre-mapping source" : "post-mapping projector raster";
-    inspectorTitle.textContent = `${label} · ${selectedLook}`;
+    const outputMode = sourceCanvas.dataset.outputMode === "pre" ? "portrait pre-mapping source" : "portrait post-mapping projector raster";
+    const projectorNumber = Number(sourceCanvas.dataset.projectorOutput ?? 0) + 1;
+    inspectorTitle.textContent = `Projector ${projectorNumber} · ${outputMode} · ${selectedLook}`;
     inspectorCanvas.setAttribute(
       "aria-label",
-      `${label} · ${selectedLook} · ${shaderFamily} · ${outputMode}`,
+      `Projector ${projectorNumber} · ${selectedLook} · ${shaderFamily} · ${outputMode}`,
     );
     inspector.dataset.view = view;
     inspector.hidden = false;
@@ -2037,6 +2975,380 @@ export class StudioUI {
     }
   }
 
+  private bindProjectorTest(root: HTMLElement): void {
+    const preview = this.requireElement(root, "projector-test-preview") as HTMLCanvasElement;
+    const patternSelect = this.requireSelect(root, "projector-test-pattern");
+    const presetSelect = this.requireSelect(root, "projector-test-preset");
+    const overlayInput = this.requireInput(root, "projector-test-overlay");
+    const renderPreview = (): void => {
+      this.projectorTestPattern = patternSelect.value as ProjectorTestPattern;
+      this.projectorTestOverlay = overlayInput.checked;
+      renderProjectorTestPattern(preview, {
+        pattern: this.projectorTestPattern,
+        frame: 24,
+        timestampMs: 200,
+        startedAtMs: 0,
+        showOverlay: this.projectorTestOverlay,
+        requestedRefreshHz: Number(this.requireSelect(root, "projector-test-refresh").value),
+      });
+      this.requireElement(root, "projector-test-pattern-readout").textContent =
+        patternLabel(this.projectorTestPattern).toUpperCase();
+    };
+    patternSelect.addEventListener("change", renderPreview);
+    overlayInput.addEventListener("change", renderPreview);
+    this.requireSelect(root, "projector-test-refresh").addEventListener("change", renderPreview);
+    presetSelect.addEventListener("change", () => {
+      const preset = getProjectorTestPreset(presetSelect.value);
+      if (!preset) return;
+      this.requireInput(root, "projector-test-model").value = preset.projectorModel;
+      this.requireInput(root, "projector-test-lens").value = preset.lens;
+      this.requireSelect(root, "projector-test-resolution").value = preset.requestedResolution;
+      this.requireSelect(root, "projector-test-refresh").value = String(preset.requestedRefreshHz);
+      (this.requireElement(root, "projector-test-notes") as HTMLTextAreaElement).value = preset.notes;
+      this.requireInput(root, "projector-test-confirmed").checked = false;
+      [
+        "projector-test-serial",
+        "projector-test-firmware",
+        "projector-test-signal-mode",
+        "projector-test-image-mode",
+        "projector-test-throw-distance",
+        "projector-test-image-width",
+        "projector-test-recording-fps",
+        "projector-test-latency-best",
+        "projector-test-latency-median",
+        "projector-test-latency-worst",
+      ].forEach((id) => { this.requireInput(root, id).value = ""; });
+      this.requireSelect(root, "projector-test-focus-verdict").value = "not-tested";
+      this.requireSelect(root, "projector-test-material-verdict").value = "not-tested";
+      this.requireSelect(root, "projector-test-physical-verdict").value = "unmeasured";
+      this.projectorTestObservedHz = null;
+      this.requireElement(root, "projector-test-observed-hz").textContent = "Not measured";
+      this.requireElement(root, "projector-test-status").textContent =
+        `PRESET LOADED · ${preset.label.toUpperCase()} · hardware mode unconfirmed`;
+      renderPreview();
+      this.setAuthoringStatus(`${preset.label} preset loaded`, false);
+    });
+    root.querySelectorAll<HTMLButtonElement>("[data-projector-test-pattern]").forEach((button) => {
+      button.addEventListener("click", () => {
+        patternSelect.value = button.dataset.projectorTestPattern ?? "latency";
+        renderPreview();
+      });
+    });
+    this.requireElement(root, "open-projector-test").addEventListener("click", () => {
+      this.openProjectorTestWindow(root);
+    });
+    this.requireElement(root, "export-projector-test").addEventListener("click", () => {
+      this.exportProjectorTestRecord(root);
+    });
+    this.requireElement(root, "import-projector-tests").addEventListener("click", () => {
+      this.requireInput(root, "projector-test-import").click();
+    });
+    this.requireInput(root, "projector-test-import").addEventListener("change", (event) => {
+      const input = event.target as HTMLInputElement;
+      const files = Array.from(input.files ?? []);
+      void (async () => {
+        const imported: ProjectorTestRecord[] = [];
+        const errors: string[] = [];
+        for (const file of files) {
+          try {
+            imported.push(parseProjectorTestRecord(JSON.parse(await file.text())));
+          } catch (error) {
+            errors.push(`${file.name}: ${error instanceof Error ? error.message : "invalid record"}`);
+          }
+        }
+        if (imported.length > 0) {
+          this.projectorComparisonRecords = files.length > 1
+            ? imported.slice(-2)
+            : [...this.projectorComparisonRecords, ...imported].slice(-2);
+          this.renderProjectorTestComparison(root);
+        }
+        const status = this.requireElement(root, "projector-test-comparison-status");
+        if (errors.length > 0) {
+          status.textContent = errors.join(" · ");
+          status.dataset.state = "error";
+          this.setAuthoringStatus("Some projector records could not be imported", true);
+        } else if (imported.length > 0) {
+          status.textContent = `${this.projectorComparisonRecords.length} verified record${this.projectorComparisonRecords.length === 1 ? "" : "s"} loaded · missing measurements remain unresolved`;
+          status.dataset.state = "ready";
+          this.setAuthoringStatus("Projector comparison updated", false);
+        }
+        input.value = "";
+      })();
+    });
+    this.requireElement(root, "clear-projector-tests").addEventListener("click", () => {
+      this.projectorComparisonRecords = [];
+      this.renderProjectorTestComparison(root);
+      const status = this.requireElement(root, "projector-test-comparison-status");
+      status.textContent = "No test records loaded";
+      status.dataset.state = "empty";
+    });
+    this.renderProjectorTestComparison(root);
+    renderPreview();
+  }
+
+  private openProjectorTestWindow(root: HTMLElement): void {
+    const output = window.open(
+      "",
+      "orbital-projector-test",
+      "popup,width=1100,height=720,resizable=yes",
+    );
+    if (!output) {
+      this.setAuthoringStatus("Projector test window blocked", true);
+      return;
+    }
+    if (this.projectorTestWindowSession) {
+      this.projectorTestWindowSession.owner.cancelAnimationFrame(
+        this.projectorTestWindowSession.frameRequest,
+      );
+      this.projectorTestWindowSession.owner.close();
+      this.projectorTestWindowSession = null;
+    }
+    const [width, height] = this.requireSelect(root, "projector-test-resolution").value
+      .split("x")
+      .map(Number);
+    const requestedRefreshHz = Number(this.requireSelect(root, "projector-test-refresh").value);
+    const safePatternLabel = escapeHtml(patternLabel(this.projectorTestPattern));
+    output.document.title = `Orbital · Projector test · ${safePatternLabel}`;
+    output.document.body.innerHTML = `
+      <style>
+        :root { color-scheme:dark; font-family:Inter,system-ui,sans-serif; background:#030605; color:#e9efec; }
+        body { margin:0; min-height:100vh; overflow:hidden; background:#000; }
+        main { width:100vw; height:100vh; display:grid; grid-template-rows:auto minmax(0,1fr) auto; }
+        header,.controls { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:8px 12px; background:#040706; color:#8b9a94; font-size:11px; letter-spacing:.08em; text-transform:uppercase; }
+        header strong { color:#e9efec; font-size:14px; }
+        .surface { position:relative; overflow:hidden; background:#000; }
+        .surface:fullscreen { width:100vw; height:100vh; }
+        .surface[data-blackout="true"]::after { content:""; position:absolute; inset:0; background:#000; z-index:100; }
+        canvas { width:100%; height:100%; display:block; object-fit:contain; image-rendering:auto; }
+        button { color:#b9d6ce; border:1px solid #29423b; background:#09110f; padding:6px 9px; }
+        output { color:#9cf5dd; font-variant-numeric:tabular-nums; }
+      </style>
+      <main>
+        <header><strong>ORBITAL · PROJECTOR TEST</strong><span>${width}×${height} · REQUESTED ${requestedRefreshHz} Hz</span></header>
+        <div class="surface"><canvas width="${width}" height="${height}" aria-label="Orbital ${safePatternLabel} projector test"></canvas></div>
+        <div class="controls"><span><strong data-pattern-label>${safePatternLabel}</strong> · <output data-cadence>MEASURING BROWSER CADENCE</output></span><div><button data-cycle>Next pattern</button><button data-overlay>Hide overlay</button><button data-fullscreen>Full screen</button></div></div>
+      </main>`;
+    const canvas = output.document.querySelector("canvas") as HTMLCanvasElement;
+    const testSurface = output.document.querySelector<HTMLElement>('.surface');
+    if (testSurface) testSurface.dataset.blackout = String(this.outputBlackedOut);
+    const patternReadout = output.document.querySelector<HTMLElement>("[data-pattern-label]");
+    const cadenceReadout = output.document.querySelector<HTMLOutputElement>("[data-cadence]");
+    const overlayButton = output.document.querySelector<HTMLButtonElement>("[data-overlay]");
+    const startedAtMs = output.performance.now();
+    const frameTimes: number[] = [];
+    let frame = 0;
+    let pattern = this.projectorTestPattern;
+    let showOverlay = this.projectorTestOverlay;
+    let frameRequest = 0;
+    const syncControls = (): void => {
+      if (patternReadout) patternReadout.textContent = patternLabel(pattern);
+      if (overlayButton) overlayButton.textContent = showOverlay ? "Hide overlay" : "Show overlay";
+    };
+    const cyclePattern = (): void => {
+      const index = PROJECTOR_TEST_PATTERNS.findIndex((candidate) => candidate.id === pattern);
+      pattern = PROJECTOR_TEST_PATTERNS[(index + 1) % PROJECTOR_TEST_PATTERNS.length].id;
+      this.projectorTestPattern = pattern;
+      this.requireSelect(root, "projector-test-pattern").value = pattern;
+      this.requireSelect(root, "projector-test-pattern").dispatchEvent(new Event("change"));
+      syncControls();
+    };
+    const render = (timestampMs: number): void => {
+      if (output.closed) return;
+      frame += 1;
+      frameTimes.push(timestampMs);
+      while (frameTimes.length > 120) frameTimes.shift();
+      if (frameTimes.length >= 30) {
+        const durationMs = frameTimes[frameTimes.length - 1] - frameTimes[0];
+        this.projectorTestObservedHz = durationMs > 0
+          ? ((frameTimes.length - 1) * 1000) / durationMs
+          : null;
+        if (cadenceReadout && this.projectorTestObservedHz !== null) {
+          cadenceReadout.textContent = `BROWSER ${this.projectorTestObservedHz.toFixed(1)} Hz · PROJECTOR UNCONFIRMED`;
+        }
+        const appReadout = document.getElementById("projector-test-observed-hz");
+        if (appReadout && this.projectorTestObservedHz !== null) {
+          appReadout.textContent = `${this.projectorTestObservedHz.toFixed(1)} Hz browser`;
+        }
+      }
+      renderProjectorTestPattern(canvas, {
+        pattern,
+        frame,
+        timestampMs,
+        startedAtMs,
+        showOverlay,
+        requestedRefreshHz,
+      });
+      frameRequest = output.requestAnimationFrame(render);
+      if (this.projectorTestWindowSession?.owner === output) {
+        this.projectorTestWindowSession.frameRequest = frameRequest;
+      }
+    };
+    output.document.querySelector<HTMLButtonElement>("[data-cycle]")?.addEventListener("click", cyclePattern);
+    overlayButton?.addEventListener("click", () => {
+      showOverlay = !showOverlay;
+      this.projectorTestOverlay = showOverlay;
+      this.requireInput(root, "projector-test-overlay").checked = showOverlay;
+      syncControls();
+    });
+    output.document.querySelector<HTMLButtonElement>("[data-fullscreen]")?.addEventListener("click", () => {
+      if (output.document.fullscreenElement) void output.document.exitFullscreen();
+      else void output.document.querySelector<HTMLElement>(".surface")?.requestFullscreen?.();
+    });
+    output.document.addEventListener("keydown", (event) => {
+      if (event.key.toLowerCase() === 'b') {
+        document.getElementById('test-blackout')?.click();
+      } else if (event.key === " ") {
+        event.preventDefault();
+        cyclePattern();
+      } else if (event.key.toLowerCase() === "o") {
+        showOverlay = !showOverlay;
+        syncControls();
+      } else if (event.key.toLowerCase() === "f") {
+        if (output.document.fullscreenElement) void output.document.exitFullscreen();
+        else void output.document.querySelector<HTMLElement>(".surface")?.requestFullscreen?.();
+      }
+    });
+    output.addEventListener("beforeunload", () => {
+      output.cancelAnimationFrame(frameRequest);
+      if (this.projectorTestWindowSession?.owner === output) {
+        this.projectorTestWindowSession = null;
+      }
+    }, { once: true });
+    syncControls();
+    frameRequest = output.requestAnimationFrame(render);
+    this.projectorTestWindowSession = { owner: output, frameRequest };
+    this.requireElement(root, "projector-test-status").textContent =
+      `OPEN · ${width}×${height} · requested ${requestedRefreshHz} Hz · projector confirmation required`;
+    this.setAuthoringStatus("Projector test output opened", false);
+  }
+
+  private exportProjectorTestRecord(root: HTMLElement): void {
+    const value = (id: string): string => this.requireInput(root, id).value.trim();
+    const optionalNumber = (id: string): number | null => {
+      const raw = value(id);
+      const parsed = Number(raw);
+      return raw !== "" && Number.isFinite(parsed) ? parsed : null;
+    };
+    const requestedResolution = this.requireSelect(root, "projector-test-resolution").value;
+    const requestedRefreshHz = Number(this.requireSelect(root, "projector-test-refresh").value);
+    const record = buildProjectorTestRecord({
+      projectorModel: value("projector-test-model"),
+      serialNumber: value("projector-test-serial"),
+      firmware: value("projector-test-firmware"),
+      lens: value("projector-test-lens"),
+      signalMode: value("projector-test-signal-mode"),
+      imageMode: value("projector-test-image-mode"),
+      throwDistanceM: optionalNumber("projector-test-throw-distance"),
+      imageWidthM: optionalNumber("projector-test-image-width"),
+      requestedResolution,
+      requestedRefreshHz,
+      projectorConfirmedMode: this.requireInput(root, "projector-test-confirmed").checked,
+      observedBrowserHz: this.projectorTestObservedHz === null
+        ? null
+        : Number(this.projectorTestObservedHz.toFixed(2)),
+      recordingFps: optionalNumber("projector-test-recording-fps"),
+      latencyBestMs: optionalNumber("projector-test-latency-best"),
+      latencyMedianMs: optionalNumber("projector-test-latency-median"),
+      latencyWorstMs: optionalNumber("projector-test-latency-worst"),
+      focusVerdict: this.requireSelect(root, "projector-test-focus-verdict").value as ProjectorTestRecord["focusVerdict"],
+      materialVerdict: this.requireSelect(root, "projector-test-material-verdict").value as ProjectorTestRecord["materialVerdict"],
+      physicalTestVerdict: this.requireSelect(root, "projector-test-physical-verdict").value as ProjectorTestRecord["physicalTestVerdict"],
+      notes: (this.requireElement(root, "projector-test-notes") as HTMLTextAreaElement).value.trim(),
+    });
+    const url = URL.createObjectURL(new Blob([`${JSON.stringify(record, null, 2)}\n`], { type: "application/json" }));
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    const filename = buildProjectorTestFilename(record);
+    anchor.download = filename;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    this.requireElement(root, "projector-test-status").textContent =
+      `EXPORTED · ${filename} · physical latency measurement still required`;
+    this.setAuthoringStatus("Projector test record exported", false);
+  }
+
+  private renderProjectorTestComparison(root: HTMLElement): void {
+    const grid = this.requireElement(root, "projector-test-comparison-grid");
+    if (this.projectorComparisonRecords.length === 0) {
+      grid.innerHTML = `<div class="projector-comparison-empty"><strong>NO RECORDS LOADED</strong><span>Import one or two exported projector test JSON files. No result is inferred from an empty field.</span></div>`;
+      return;
+    }
+    const numberValue = (value: number | null | undefined, suffix: string, digits = 1): string =>
+      value === null || value === undefined ? "Not measured" : `${value.toFixed(digits)} ${suffix}`;
+    grid.innerHTML = this.projectorComparisonRecords.map((record) => {
+      const throwRatio = projectorTestThrowRatio(record);
+      const latencyRange = record.latencyBestMs === null || record.latencyBestMs === undefined ||
+        record.latencyWorstMs === null || record.latencyWorstMs === undefined
+        ? "Not measured"
+        : `${record.latencyBestMs.toFixed(1)} to ${record.latencyWorstMs.toFixed(1)} ms`;
+      const recordedAt = new Date(record.recordedAt).toLocaleString("en-AU", {
+        dateStyle: "medium",
+        timeStyle: "short",
+      });
+      const confirmedSignal = record.signalMode.trim() ||
+        `${record.requestedResolution} at ${record.requestedRefreshHz} Hz requested`;
+      const physicalVerdict = projectorTestPhysicalVerdictLabel(record.physicalTestVerdict ?? "unmeasured");
+      return `<article class="projector-comparison-card" data-verdict="${escapeHtml(record.physicalTestVerdict ?? "unmeasured")}">
+        <header><strong>${escapeHtml(record.projectorModel || "Unknown projector")}</strong><span>${escapeHtml(recordedAt)}</span></header>
+        <dl>
+          <div><dt>Signal</dt><dd>${escapeHtml(confirmedSignal)}</dd></div>
+          <div><dt>Hardware confirmed</dt><dd>${record.projectorConfirmedMode ? "YES" : "NO"}</dd></div>
+          <div><dt>Median latency</dt><dd>${numberValue(record.latencyMedianMs, "ms")}</dd></div>
+          <div><dt>Latency range</dt><dd>${latencyRange}</dd></div>
+          <div><dt>Recording rate</dt><dd>${numberValue(record.recordingFps, "fps", 0)}</dd></div>
+          <div><dt>Throw distance</dt><dd>${numberValue(record.throwDistanceM, "m", 2)}</dd></div>
+          <div><dt>Image width</dt><dd>${numberValue(record.imageWidthM, "m", 2)}</dd></div>
+          <div><dt>Measured throw</dt><dd>${throwRatio === null ? "Not measured" : throwRatio.toFixed(3)}</dd></div>
+          <div><dt>Curved focus</dt><dd>${escapeHtml(projectorTestObservationVerdictLabel(record.focusVerdict ?? "not-tested"))}</dd></div>
+          <div><dt>Material response</dt><dd>${escapeHtml(projectorTestObservationVerdictLabel(record.materialVerdict ?? "not-tested"))}</dd></div>
+        </dl>
+        <div class="projector-comparison-verdict"><span>PHYSICAL VERDICT</span><strong>${escapeHtml(physicalVerdict)}</strong></div>
+      </article>`;
+    }).join("");
+  }
+
+  /**
+   * Put a projector window on the projector: the largest screen other than the one
+   * Studio is on. Chrome asks once for "window management" permission; without it,
+   * or with one screen, the window stays where it opened.
+   */
+  /** Set by callers that want a freshly opened projector window to go full screen straight away. */
+  public fullscreenOnOpen = true;
+
+  /**
+   * Make the projector window full screen from a click in Studio. A browser only lets
+   * the window that was clicked go full screen, so the click's permission is handed to
+   * the projector window with capability delegation (Chrome 104+). Returns false when no
+   * projector window is open or the browser cannot delegate.
+   */
+  public requestProjectorFullscreen(): boolean {
+    const owner = this.outputWindowSessions.get("projector-1")?.owner;
+    if (!owner || owner.closed) return false;
+    try {
+      owner.focus();
+      (owner.postMessage as (message: unknown, options: { targetOrigin: string; delegate: string }) => void)(
+        "orbital-projector-fullscreen", { targetOrigin: window.location.origin, delegate: "fullscreen" },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async placeOnProjectorScreen(output: Window): Promise<void> {
+    const details = window as Window & { getScreenDetails?: () => Promise<{ screens: Array<{ availLeft: number; availTop: number; availWidth: number; availHeight: number; width: number; height: number }>; currentScreen: { availLeft: number; availTop: number } }> };
+    if (typeof details.getScreenDetails !== "function") return;
+    try {
+      const { screens, currentScreen } = await details.getScreenDetails();
+      const others = screens.filter((screen) => screen.availLeft !== currentScreen.availLeft || screen.availTop !== currentScreen.availTop);
+      const target = others.sort((a, b) => b.width * b.height - a.width * a.height)[0];
+      if (!target || output.closed) return;
+      output.moveTo(target.availLeft, target.availTop);
+      output.resizeTo(target.availWidth, target.availHeight);
+      output.focus();
+    } catch { /* permission declined or unsupported: the window stays where it opened */ }
+  }
+
   private openOutputWindow(view: MappingViewMode): void {
     if (typeof window.open !== "function") {
       this.openOutputInspector(view);
@@ -2045,12 +3357,23 @@ export class StudioUI {
     const output = window.open(
       "",
       `orbital-${view}`,
-      "popup,width=760,height=600,resizable=yes",
+      this.outputResolution.width >= this.outputResolution.height
+        ? "popup,width=1100,height=700,resizable=yes"
+        : "popup,width=620,height=900,resizable=yes",
     );
     if (!output) {
       this.openOutputInspector(view);
       this.setAuthoringStatus("Output window blocked · inline inspector opened", false);
       return;
+    }
+    // Bring it forward: a new popup can open behind the main window, and an existing
+    // window with this name is reused in place (27 September, the window "never opened").
+    try { output.focus(); } catch { /* focus is best effort */ }
+    const previousSession = this.outputWindowSessions.get(view);
+    if (previousSession) {
+      previousSession.owner.cancelAnimationFrame(previousSession.frameRequest);
+      this.callbacks.onDisposeProjectorOutput(previousSession.canvas);
+      this.outputWindowSessions.delete(view);
     }
     const label = mappingViewLabel(view);
     const outputGrid = document.getElementById("output-grid");
@@ -2067,31 +3390,129 @@ export class StudioUI {
     const safeLabel = escapeHtml(label);
     const safeLook = escapeHtml(selectedLook);
     const safeFamily = escapeHtml(shaderFamily);
-    const safeMode = sourceCanvas.dataset.outputMode === "pre" ? "pre-mapping source" : "post-mapping projector raster";
+    const orientation = this.outputResolution.width >= this.outputResolution.height ? "landscape" : "portrait";
+    const safeMode = sourceCanvas.dataset.outputMode === "pre" ? `${orientation} pre-mapping source` : `${orientation} post-mapping projector raster`;
+    const projectorNumber = Number(sourceCanvas.dataset.projectorOutput ?? 0) + 1;
+    const sourceIndex = projectorNumber - 1;
+    const { width, height, refreshHz } = this.outputResolution;
+    const previousWindowCanvas = output.document.querySelector<HTMLCanvasElement>("canvas");
+    if (previousWindowCanvas) {
+      this.callbacks.onDisposeProjectorOutput(previousWindowCanvas);
+    }
     output.document.title = `Orbital · ${label} · ${selectedLook}`;
-    output.document.body.innerHTML = `
+    const windowMarkup = `
       <style>
         :root { color-scheme: dark; font-family: Inter, system-ui, sans-serif; background:#030605; color:#e9efec; }
-        body { margin:0; min-height:100vh; display:grid; place-items:center; background:radial-gradient(circle at 50% 38%, #102c38, #030605 65%); }
-        main { width:min(92vw, 720px); display:grid; gap:16px; }
+        body { margin:0; min-height:100vh; display:grid; place-items:center; background:#000; overflow:hidden; }
+        main { width:100vw; height:100vh; display:grid; grid-template-rows:auto minmax(0,1fr) auto; }
         header { display:flex; justify-content:space-between; align-items:baseline; color:#8b9a94; font-size:12px; letter-spacing:.12em; text-transform:uppercase; }
         strong { color:#e9efec; font-size:16px; letter-spacing:.04em; }
-        .surface { aspect-ratio:16/10; overflow:auto; display:grid; place-items:center; border:1px solid rgba(206,234,224,.24); background:#000; box-shadow:0 0 42px rgba(45,205,198,.12); }
-        canvas { width:100%; height:auto; display:block; image-rendering:auto; }
+        header,.meta { padding:8px 12px; background:#040706; }
+        .surface { position:relative; overflow:hidden; display:grid; place-items:center; background:#000; }
+        .surface:fullscreen { width:100vw; height:100vh; }
+        .surface[data-blackout="true"]::after { content:""; position:absolute; inset:0; background:#000; z-index:100; }
+        canvas { width:100%; height:100%; object-fit:contain; display:block; image-rendering:auto; }
+        .identify { position:absolute; inset:0; display:none; place-items:center; color:#fff; background:#00a88b; font:900 24vw/1 system-ui; }
+        .identify[data-visible="true"] { display:grid; }
         small { color:#63736c; letter-spacing:.04em; }
-        .meta { display:flex; justify-content:space-between; gap:12px; color:#8b9a94; font-size:11px; letter-spacing:.06em; }
+        .meta { display:flex; justify-content:space-between; align-items:center; gap:12px; color:#8b9a94; font-size:11px; letter-spacing:.06em; }
         .meta strong { font-size:11px; color:#b9d6ce; }
+        [data-block-reason]:empty { display:none; }
+        [data-block-reason] { color:#f0a094; font-weight:600; letter-spacing:.04em; }
+        button { color:#b9d6ce; border:1px solid #29423b; background:#09110f; padding:5px 8px; }
       </style>
-      <main><header><strong>ORBITAL</strong><span>${safeLabel}</span></header><div class="surface"><canvas width="640" height="400" aria-label="${safeLabel} · ${safeLook} · ${safeFamily} live projector raster"></canvas></div><div class="meta"><strong>${safeLook}</strong><span>${safeFamily} · ${safeMode} · live render</span></div><small>Monitor window only · physical accuracy requires a measured camera solve</small></main>`;
+      <main><header><strong>ORBITAL · P${projectorNumber} · PRESS F OR DOUBLE-CLICK FOR FULL SCREEN</strong><span>DIRECT WEBGL · ${width}×${height} · ${refreshHz} Hz</span></header><div class="surface"><canvas width="${width}" height="${height}" data-render-source="direct-webgl" aria-label="${safeLabel} · ${safeLook} · ${safeFamily} native-resolution projector raster"></canvas><div class="identify">P${projectorNumber}</div></div><div class="meta"><strong>${safeLook}</strong><span>${safeFamily} · ${safeMode}</span><span data-block-reason role="status" aria-live="polite"></span><div><button data-freeze>Freeze</button> <button data-identify>Identify</button> <button data-fullscreen onclick="${PROJECTOR_WINDOW_FULLSCREEN_TOGGLE}">Full screen</button></div></div></main>`;
+    writeProjectorWindowBody(output, windowMarkup);
     const windowCanvas = output.document.querySelector("canvas") as HTMLCanvasElement | null;
+    const surface = output.document.querySelector<HTMLElement>('.surface');
+    if (surface) surface.dataset.blackout = String(this.outputBlackedOut);
+    const blockReasonLabel = output.document.querySelector<HTMLElement>('.meta [data-block-reason]');
+    let lastBlockReason: string | null = null;
+    const syncBlockReason = () => {
+      if (!blockReasonLabel || !windowCanvas) return;
+      const code = windowCanvas.dataset.outputBlockReason || null;
+      if (code === lastBlockReason) return;
+      lastBlockReason = code;
+      const text = describeOutputBlockReason(code);
+      blockReasonLabel.textContent = text ? `OUTPUT BLOCKED: ${text}` : "";
+      surface?.setAttribute("data-block-reason", code ?? "");
+    };
+    output.document.addEventListener('keydown', event => {
+      if (event.key.toLowerCase() === 'b') document.getElementById('test-blackout')?.click();
+    });
+    let frozen = false;
     const syncWindow = () => {
       if (output.closed || !windowCanvas) return;
-      windowCanvas.getContext("2d")?.drawImage(sourceCanvas, 0, 0, windowCanvas.width, windowCanvas.height);
+      if (frozen && this.lastSnapshot?.world.mode !== "live") return;
+      // Only the first open output window drives the runtime, so two windows
+      // never double-tick the engine. The others only render.
+      const firstSession = this.outputWindowSessions.values().next().value;
+      const isDriver = !firstSession || firstSession.owner === output;
+      this.callbacks.onRenderProjectorOutput(
+        sourceIndex,
+        windowCanvas,
+        width,
+        height,
+        sourceCanvas.dataset.outputMode === "pre" ? "pre" : "post",
+        isDriver,
+      );
+      syncBlockReason();
     };
+    // The render clock belongs to the projector window: its own
+    // requestAnimationFrame runs at the projector's refresh while the control
+    // page is throttled behind a fullscreen window.
+    const session = { canvas: windowCanvas!, owner: output, frameRequest: 0 };
+    const loop = () => {
+      if (output.closed) return;
+      session.frameRequest = output.requestAnimationFrame(loop);
+      syncWindow();
+    };
+    if (windowCanvas) this.outputWindowSessions.set(view, session);
     syncWindow();
-    const syncTimer = window.setInterval(syncWindow, 100);
-    output.addEventListener("beforeunload", () => window.clearInterval(syncTimer), { once: true });
+    session.frameRequest = output.requestAnimationFrame(loop);
+    output.document.querySelector<HTMLButtonElement>("[data-freeze]")?.addEventListener("click", (event) => {
+      if (this.lastSnapshot?.world.mode === "live") {
+        frozen = false;
+        (event.currentTarget as HTMLButtonElement).textContent = "Live output cannot freeze";
+        return;
+      }
+      frozen = !frozen;
+      (event.currentTarget as HTMLButtonElement).textContent = frozen ? "Resume" : "Freeze";
+    });
+    const identify = output.document.querySelector<HTMLElement>(".identify");
+    output.document.querySelector<HTMLButtonElement>("[data-identify]")?.addEventListener("click", () => {
+      if (!identify) return;
+      identify.dataset.visible = "true";
+      output.setTimeout(() => { identify.dataset.visible = "false"; }, 1800);
+    });
+    output.document.addEventListener("fullscreenchange", syncWindow);
+    // Full screen (button, F or Cmd+F, double-click) is wired with inline handlers that live in the
+    // projector window itself, so they keep working after Studio reloads and orphans the window.
+    // Clear the listener-based versions an earlier build attached, so nothing toggles twice.
+    const keyed = output as Window & { __orbitalKeys?: (event: KeyboardEvent) => void; __orbitalDblClick?: () => void };
+    if (keyed.__orbitalKeys) output.document.removeEventListener("keydown", keyed.__orbitalKeys);
+    if (keyed.__orbitalDblClick) output.document.removeEventListener("dblclick", keyed.__orbitalDblClick);
+    keyed.__orbitalKeys = undefined; keyed.__orbitalDblClick = undefined;
+    output.document.body.setAttribute("ondblclick", PROJECTOR_WINDOW_FULLSCREEN_TOGGLE);
+    output.document.body.setAttribute("onkeydown", "if(event.key.toLowerCase()==='f'&&!event.altKey&&!event.ctrlKey){event.preventDefault();" + PROJECTOR_WINDOW_FULLSCREEN_TOGGLE + "}");
+    // Studio's own Full screen button delegates its click to this window (see requestProjectorFullscreen).
+    output.document.body.setAttribute("onmessage", "if(event.data==='orbital-projector-fullscreen'&&!document.fullscreenElement){document.querySelector('.surface').requestFullscreen().catch(function(){});}");
+    void this.placeOnProjectorScreen(output).then(() => { if (this.fullscreenOnOpen) this.requestProjectorFullscreen(); });
+    output.addEventListener("beforeunload", () => {
+      output.cancelAnimationFrame(session.frameRequest);
+      output.document.removeEventListener("fullscreenchange", syncWindow);
+      if (windowCanvas) {
+        this.callbacks.onDisposeProjectorOutput(windowCanvas);
+        if (this.outputWindowSessions.get(view)?.canvas === windowCanvas) {
+          this.outputWindowSessions.delete(view);
+        }
+      }
+    }, { once: true });
     output.focus();
+    this.setAuthoringStatus(
+      `P${projectorNumber} direct ${width} × ${height} WebGL output opened`,
+      false,
+    );
   }
 
   private buildTimeline(): void {
@@ -2326,7 +3747,7 @@ export class StudioUI {
 
   private updateProjectors(levels: ProjectorLevels): void {
     const active = levels.filter((level) => level > 0.01).length;
-    this.elements.projectionStatus.textContent = `${active}/5 active · shape-locked`;
+    this.elements.projectionStatus.textContent = `${active}/5 active · portrait 90° · shape-locked`;
     levels.forEach((level, index) => {
       const meter = document.querySelector<HTMLElement>(
         `[data-projector-meter="${index}"]`,
@@ -2369,13 +3790,13 @@ export class StudioUI {
 
   private template(): string {
     return `
-      <div class="studio-shell" data-manual-layer="false">
+      <div id="studio-shell" class="studio-shell" data-manual-layer="false" data-looks-expert="false">
         <header class="studio-header">
           <div class="brand">
             <span class="brand-mark"></span>
             <div>
               <strong>ORBITAL</strong>
-              <span>Phase One · mapping lab</span>
+              <span>Spherical projection / test studio</span>
             </div>
           </div>
           <div class="mode-switcher" aria-label="Runtime mode">
@@ -2384,8 +3805,17 @@ export class StudioUI {
             <button type="button" data-runtime-mode="live">Live gate</button>
             <input id="replay-input" type="file" accept=".jsonl,.ndjson,text/plain" hidden>
           </div>
+          <div class="quick-rig" aria-label="Projector test mode">
+            <label for="quick-rig-mode">OUTPUTS</label>
+            <select id="quick-rig-mode" aria-label="Active projector test mode">
+              <option value="prototype-1">ONE PROJECTOR</option>
+              <option value="production-5">ALL FIVE PROJECTORS</option>
+            </select>
+            <small id="quick-rig-status">P1 ACTIVE · P2/3/4/5 STANDBY</small>
+          </div>
           <div class="transport">
-            <button id="play-button" class="transport-primary" type="button">Run test</button>
+            <button id="audiovisual-show-button" class="transport-show" type="button">Play audiovisual show</button>
+            <button id="play-button" class="transport-primary" type="button">Run motion test</button>
             <button id="reset-button" type="button">Stop</button>
             <select id="rate-select" aria-label="Playback rate">
               <option value="1">1×</option>
@@ -2412,7 +3842,7 @@ export class StudioUI {
                 <strong id="tracking-status" data-status="tracking">tracking</strong>
               </div>
               <div class="viewport-overlay live-notice" id="live-notice" hidden>
-                Live capture remains unavailable until a measured machine-vision adapter passes hardware tests.
+                Local fused-state bridge active. Simulated native capture is software evidence only, not camera validation.
               </div>
               <div class="viewport-legend">
                 <span><i class="legend-observed"></i>Observed</span>
@@ -2438,7 +3868,7 @@ export class StudioUI {
                 ${[1, 2, 3, 4, 5].map((index) => {
                   const actionLabel = `Inspect projector ${index} output`;
                   const actionText = "Inspect";
-                  return `<article class="output-tile" data-output-view="projector-${index}"><div class="output-tile-heading"><span>P${index}</span><div><button type="button" data-output-mode-index="${index - 1}" aria-label="Projector ${index} output mode: post-mapping. Click to switch.">POST</button><button type="button" data-inspect-view="projector-${index}" aria-label="${actionLabel}">${actionText}</button></div></div><div class="output-tile-preview" role="img" aria-label="Live P${index} projector raster"><canvas data-projector-output="${index - 1}" data-output-mode="post" width="640" height="400"></canvas></div><small>post-mapping · live render</small></article>`;
+                  return `<article class="output-tile" data-output-view="projector-${index}"><div class="output-tile-heading"><span>P${index} · 90°</span><div><button type="button" data-output-mode-index="${index - 1}" aria-label="Projector ${index} output mode: post-mapping. Click to switch.">POST</button><button type="button" data-inspect-view="projector-${index}" aria-label="${actionLabel}">${actionText}</button><button type="button" data-open-output-window="projector-${index}" aria-label="Open projector ${index} output window">OPEN</button></div></div><div class="output-tile-preview" role="img" aria-label="Live P${index} portrait projector raster"><canvas data-projector-output="${index - 1}" data-output-mode="post" width="300" height="480"></canvas></div><b data-coverage-badge>ANALYSING</b><small>portrait · post-mapping · live render</small></article>`;
                 }).join("")}
               </div>
               <div class="mapping-lab-note">P1–P5 move the main viewport to each projector camera. After calibration, every tile shows its loaded post-warp shape and per-edge blend mask. SIMULATED means rehearsal data, MEASURED means camera-derived data.</div>
@@ -2448,7 +3878,7 @@ export class StudioUI {
                     <div><span>INLINE OUTPUT INSPECTOR</span><strong id="output-inspector-title">Projector output</strong></div>
                     <div class="output-inspector-actions"><button type="button" data-output-cycle="previous" aria-label="Previous projector">← P</button><button type="button" data-output-cycle="next" aria-label="Next projector">P →</button><button id="output-inspector-popout" type="button">Open window</button><button id="output-inspector-close" type="button">Close</button></div>
                   </header>
-                  <div id="output-inspector-preview" class="output-inspector-preview"><canvas id="output-inspector-canvas" width="640" height="400" role="img"></canvas></div>
+                  <div id="output-inspector-preview" class="output-inspector-preview"><canvas id="output-inspector-canvas" width="300" height="480" role="img"></canvas></div>
                   <div class="output-inspector-zoom"><label for="output-inspector-zoom">Zoom <output id="output-inspector-zoom-value">1.0×</output></label><input id="output-inspector-zoom" type="range" min="1" max="3" step="0.1" value="1"><button id="output-inspector-fullscreen" type="button">Full screen</button></div>
                   <div id="output-inspector-meta" class="output-inspector-meta"></div>
                   <small class="output-inspector-note">This is the final warped and blended raster described by the loaded calibration dataset. Physical accuracy requires a measured camera solve.</small>
@@ -2474,12 +3904,36 @@ export class StudioUI {
 
           <aside class="control-column">
             <nav class="workspace-tabs" role="tablist" aria-label="Studio workspaces">
+              <button type="button" data-workspace-tab="test" role="tab" aria-selected="false">Test bench</button>
               <button type="button" data-workspace-tab="looks" data-active="true" role="tab" aria-selected="true">Looks</button>
+              <button type="button" data-workspace-tab="projector-test" role="tab" aria-selected="false">Projector test</button>
               <button type="button" data-workspace-tab="projection" role="tab" aria-selected="false">Projection</button>
               <button type="button" data-workspace-tab="tracking" role="tab" aria-selected="false">Tracking</button>
               <button type="button" data-workspace-tab="system" role="tab" aria-selected="false">System</button>
               <button type="button" data-workspace-tab="guide" role="tab" aria-selected="false">Guide</button>
             </nav>
+            <section id="workspace-purpose" class="workspace-purpose" aria-live="polite" hidden>
+              <span>WORKSPACE</span>
+              <strong id="workspace-purpose-title">SET UP THE OUTPUTS</strong>
+              <p id="workspace-purpose-copy"></p>
+            </section>
+            <section class="control-section show-controls" data-workspace-panel="looks" aria-label="Simple audiovisual show controls">
+              <div class="show-controls-heading">
+                <div><span>SHOW CONTROLS</span><strong>Make the sphere perform</strong></div>
+                <output id="looks-mode-readout">SIMPLE · CREATE A LOOK</output>
+              </div>
+              <button id="quick-audiovisual-show" class="show-controls-play" type="button">Play full audiovisual show</button>
+              <div class="show-controls-grid">
+                <label><span>Tempo <output id="quick-show-bpm-value">${DEFAULT_LIVING_SKIN_CONTROLS.bpm}</output></span><input id="quick-show-bpm" type="range" min="54" max="180" step="1" value="${DEFAULT_LIVING_SKIN_CONTROLS.bpm}"></label>
+                <label><span>Shader chopping <output id="quick-show-fragment-value">${Math.round(((DEFAULT_LIVING_SKIN_CONTROLS.variety + DEFAULT_LIVING_SKIN_CONTROLS.glitch + DEFAULT_LIVING_SKIN_CONTROLS.flashRate) / 3) * 100)}%</output></span><input id="quick-show-fragment" type="range" min="0" max="100" step="1" value="72"></label>
+                <label><span>Rhythm scatter <output id="quick-show-rhythm-value">${Math.round(DEFAULT_LIVING_SKIN_CONTROLS.eventHold * 100)}%</output></span><input id="quick-show-rhythm" type="range" min="0" max="100" step="1" value="${Math.round(DEFAULT_LIVING_SKIN_CONTROLS.eventHold * 100)}"></label>
+                <label><span>Phrase evolution <output id="quick-show-phrase-value">${Math.round(DEFAULT_LIVING_SKIN_CONTROLS.phraseEvolution * 100)}%</output></span><input id="quick-show-phrase" type="range" min="0" max="100" step="1" value="${Math.round(DEFAULT_LIVING_SKIN_CONTROLS.phraseEvolution * 100)}"></label>
+                <label><span>Sound level <output id="quick-show-sound-value">${Math.round(DEFAULT_SHADER_EVENT_SOUND_CONTROLS.level * 100)}%</output></span><input id="quick-show-sound" type="range" min="0" max="100" step="1" value="${Math.round(DEFAULT_SHADER_EVENT_SOUND_CONTROLS.level * 100)}"></label>
+                <label class="quick-sound-switch"><span>Beat sound</span><input id="quick-show-sound-enabled" type="checkbox"></label>
+              </div>
+              <div class="show-controls-help"><span>1. Choose a shader below</span><span>2. Set the rhythm</span><span>3. Press play</span></div>
+              <button id="looks-expert-toggle" class="looks-expert-toggle" type="button" aria-expanded="false">Show expert controls</button>
+            </section>
             <section class="control-section shader-section" data-workspace-panel="looks">
               <div class="section-heading">
                 <span>SHADER TEST BENCH</span>
@@ -2518,7 +3972,7 @@ export class StudioUI {
                   <input type="range" min="${control.min}" max="${control.max}" step="${control.step}" value="${control.defaultValue}" data-shader-look-control="${control.id}" aria-label="${control.label}">
                 </label>
               `).join("")}
-              <section class="scene-preview-controls" aria-label="Scene and fan lift preview controls">
+              <section class="scene-preview-controls expert-only" aria-label="Scene and fan lift preview controls">
                 <div class="section-heading">
                   <span>SCENE &amp; LIFT</span>
                   <small>simulation only</small>
@@ -2534,6 +3988,7 @@ export class StudioUI {
                   <div><dt>Fan clearance</dt><dd id="fan-hover-clearance">0.6 m</dd></div>
                 </dl>
                 <strong id="fan-state-value" class="fan-state">SIMULATED / HEALTHY</strong>
+                <div id="aerodynamic-status" class="aerodynamic-status">BERNOULLI FLOW MODEL ACQUIRING</div>
                 <div class="scene-switches">
                   <label class="switch-row"><span>Warehouse laboratory</span><input id="warehouse-enabled" type="checkbox" checked></label>
                   <label class="switch-row"><span>Human scale figures</span><input id="warehouse-people" type="checkbox" checked></label>
@@ -2542,8 +3997,41 @@ export class StudioUI {
                   <span>Warehouse lighting <output id="environment-lighting-value">${Math.round(DEFAULT_ENVIRONMENT_PREVIEW_CONTROLS.lighting * 100)}%</output></span>
                   <input id="environment-lighting" type="range" min="0" max="1" step="0.01" value="${DEFAULT_ENVIRONMENT_PREVIEW_CONTROLS.lighting}" aria-label="Warehouse environment lighting">
                 </label>
-                <small class="control-note">Six 3D observers, including chin-stroking poses, establish the scale of the five-metre balloon.</small>
+                <label class="editor-field"><span>Lighting scene</span><select id="environment-lighting-preset">${Object.entries(ENVIRONMENT_LIGHTING_PRESETS).map(([id, preset]) => `<option value="${id}"${id === "gallery" ? " selected" : ""}>${preset.label}</option>`).join("")}</select></label>
+                <div class="material-control-grid">
+                  <label class="material-slider"><span>Light warmth <output id="environment-warmth-value">${Math.round(DEFAULT_ENVIRONMENT_PREVIEW_CONTROLS.warmth * 100)}%</output></span><input id="environment-warmth" type="range" min="0" max="1" step="0.01" value="${DEFAULT_ENVIRONMENT_PREVIEW_CONTROLS.warmth}" aria-label="Warehouse light warmth"></label>
+                  <label class="material-slider"><span>Concrete patina <output id="concrete-patina-value">${Math.round(DEFAULT_ENVIRONMENT_PREVIEW_CONTROLS.concretePatina * 100)}%</output></span><input id="concrete-patina" type="range" min="0" max="1" step="0.01" value="${DEFAULT_ENVIRONMENT_PREVIEW_CONTROLS.concretePatina}" aria-label="Rustic concrete patina"></label>
+                </div>
+                <small class="control-note">Rustic panel-jointed concrete, warm industrial practicals and six observers establish human scale.</small>
               </section>
+              <details class="material-lab expert-only">
+                <summary><span>BALLOON PHYSICS</span><small>real-material movement layers</small></summary>
+                <div class="material-control-grid">
+                  ${[
+                    ["center-drift", "Centre drift", DEFAULT_BALLOON_PHYSICS_CONTROLS.centerDrift],
+                    ["vertical-breathing", "Vertical breathing", DEFAULT_BALLOON_PHYSICS_CONTROLS.verticalBreathing],
+                    ["squash-stretch", "Squash / stretch", DEFAULT_BALLOON_PHYSICS_CONTROLS.squashStretch],
+                    ["lower-bulge", "Lower bulge", DEFAULT_BALLOON_PHYSICS_CONTROLS.lowerBulge],
+                    ["asymmetry", "Asymmetric lobes", DEFAULT_BALLOON_PHYSICS_CONTROLS.asymmetry],
+                    ["damping", "Damping", DEFAULT_BALLOON_PHYSICS_CONTROLS.damping],
+                    ["mass", "Envelope mass", DEFAULT_BALLOON_PHYSICS_CONTROLS.mass],
+                    ["jet-turbulence", "Jet turbulence", DEFAULT_BALLOON_PHYSICS_CONTROLS.jetTurbulence],
+                  ].map(([id, label, value]) => `<label class="material-slider"><span>${label}<output>${Number(value).toFixed(2)}</output></span><input type="range" min="0" max="1" step="0.01" value="${value}" data-balloon-physics="${id}"></label>`).join("")}
+                </div>
+              </details>
+              <details class="material-lab expert-only">
+                <summary><span>PROJECTION MATERIAL</span><small>contrast and internal wash</small></summary>
+                <label class="editor-field"><span>Material profile</span><select id="balloon-material-profile">${BALLOON_MATERIAL_PROFILE_IDS.map((id) => `<option value="${id}"${id === "latex" ? " selected" : ""}>${id.replace("-", " ")}</option>`).join("")}</select></label>
+                <div class="material-control-grid">
+                  ${[
+                    ["reflectance", "Reflectance", DEFAULT_PROJECTION_MATERIAL_CONTROLS.reflectance],
+                    ["translucency", "Translucency", DEFAULT_PROJECTION_MATERIAL_CONTROLS.translucency],
+                    ["internal-bleed", "Internal light bleed", DEFAULT_PROJECTION_MATERIAL_CONTROLS.internalBleed],
+                    ["roughness", "Surface roughness", DEFAULT_PROJECTION_MATERIAL_CONTROLS.roughness],
+                  ].map(([id, label, value]) => `<label class="material-slider"><span>${label}<output>${Number(value).toFixed(2)}</output></span><input type="range" min="0" max="1" step="0.01" value="${value}" data-material-control="${id}"></label>`).join("")}
+                </div>
+                <small class="control-note">A visual comparison model for latex and fabric tests. It is not a projector-lumen or fabric-transmission measurement.</small>
+              </details>
               <div id="shader-recent" class="shader-recent" role="group" aria-label="Recently viewed shader presets"></div>
               <div class="shader-catalog-heading"><span>PRESETS</span><small id="shader-catalog-count" role="status" aria-live="polite">${SHADER_PRESET_CATALOG.length} presets · showing 72</small></div>
               <div class="shader-variant-nav" aria-label="Selected shader variant navigator">
@@ -2557,13 +4045,13 @@ export class StudioUI {
                 <span>Base module</span>
                 <select id="shader-select" aria-label="Shader surface module"></select>
               </label>
-              <dl class="metric-grid">
+              <dl class="metric-grid expert-only">
                 <div><dt>Family</dt><dd id="shader-family">NEUTRAL</dd></div>
                 <div><dt>GPU estimate</dt><dd id="shader-gpu">LOW · 1 pass</dd></div>
               </dl>
-              <p id="shader-description" class="shader-description">A quiet fallback surface that keeps the ball legible in near darkness.</p>
-              <div id="shader-parameters" class="shader-parameter-list"></div>
-              <details class="shader-look-panel" open>
+              <p id="shader-description" class="shader-description expert-only">A quiet fallback surface that keeps the ball legible in near darkness.</p>
+              <div id="shader-parameters" class="shader-parameter-list expert-only"></div>
+              <details class="shader-look-panel expert-only">
                 <summary><span>SHAPE &amp; COLOUR</span><small>applies to every shader</small></summary>
                 <div id="shader-look-controls" class="shader-parameter-list shader-look-controls">
                   ${SHADER_LOOK_CONTROL_DEFINITIONS.filter((control) => control.id !== "motion").map((control) => `
@@ -2575,15 +4063,93 @@ export class StudioUI {
                 </div>
                 <button id="reset-shader-look-controls" class="wide-button shader-look-reset" type="button">Reset shape &amp; colour</button>
               </details>
-              <div class="shader-action-row">
+              <div class="shader-action-row expert-only">
                 <button id="update-selected-shader" class="wide-button primary-action" type="button">Update preset</button>
                 <button id="reset-selected-shader" class="wide-button" type="button">Restore saved preset</button>
                 <button id="assign-selected-shader" class="wide-button" type="button">Assign to active region</button>
+                <button id="export-render-project" class="wide-button" type="button">Export to Orbital Engine</button>
               </div>
-              <small class="control-note">The sphere preview runs the original procedural algorithms directly. Calibrated projector output and physical luminance remain open gates.</small>
+              <small class="control-note expert-only">The sphere preview runs the original procedural algorithms directly. Calibrated projector output and physical luminance remain open gates.</small>
             </section>
 
-            <section class="control-section region-section" data-workspace-panel="looks">
+            <section class="control-section living-skin-section expert-only" data-workspace-panel="looks">
+              <div class="section-heading">
+                <span>SPHERE BEAUTY</span>
+                <small>independent presentation finish</small>
+              </div>
+              <div class="material-control-grid">
+                ${[
+                  ["beautyLighting", "PBR beauty lighting", 0, 1, 0.01, DEFAULT_LIVING_SKIN_CONTROLS.beautyLighting],
+                  ["glow", "Sphere glow", 0, 1, 0.01, DEFAULT_LIVING_SKIN_CONTROLS.glow],
+                ].map(([id, label, min, max, step, value]) => `<label class="material-slider"><span>${label}<output>${Number(value).toFixed(2)}</output></span><input type="range" min="${min}" max="${max}" step="${step}" value="${value}" data-living-skin-control="${id}" aria-label="${label}"></label>`).join("")}
+              </div>
+              <div class="section-heading social-output-heading">
+                <span>SHADER EVENT SOUND</span>
+                <small>audio-reactive glitch pings</small>
+              </div>
+              <label class="switch-row"><span>Beat-synced kick, noise and shader hits</span><input id="shader-event-sound-enabled" type="checkbox"></label>
+              <label class="editor-field"><span>Sound palette</span><select id="shader-event-sound-palette">${SHADER_EVENT_SOUND_PALETTES.map((palette) => `<option value="${palette}"${palette === DEFAULT_SHADER_EVENT_SOUND_CONTROLS.palette ? " selected" : ""}>${palette === "mixed" ? "Mixed space, metal, bass, sweep + attack" : palette}</option>`).join("")}</select></label>
+              <div class="material-control-grid">
+                ${(["density", "reverb", "level"] as const).map((id) => `<label class="material-slider"><span>${id === "density" ? "Event density" : id === "reverb" ? "Reverb tail" : "Ping level"}<output id="shader-event-sound-${id}-value">${Math.round(DEFAULT_SHADER_EVENT_SOUND_CONTROLS[id] * 100)}%</output></span><input id="shader-event-sound-${id}" type="range" min="0" max="1" step="0.01" value="${DEFAULT_SHADER_EVENT_SOUND_CONTROLS[id]}"></label>`).join("")}
+              </div>
+              <button id="shader-event-sound-audition" class="wide-button" type="button">Audition next ping</button>
+              <small class="control-note">The browser preview cycles synthetic space drops, metallic strikes, bass impacts, sweeps and sharp attacks through a generated reverb. It is a composition sketch, not the final quadraphonic Ableton mix.</small>
+              <div class="section-heading social-output-heading">
+                <span>BEAT-CUT SKIN FRAGMENTATION</span>
+                <small>musical geometry, separate from shader tests</small>
+              </div>
+              <label class="switch-row">
+                <span>Beat-sync fractured shader geometry</span>
+                <input id="living-skins-enabled" type="checkbox"${DEFAULT_LIVING_SKIN_CONTROLS.enabled ? " checked" : ""}>
+              </label>
+              <label class="editor-field"><span>Fragment choreography</span><select id="living-skin-sequence-mode"><option value="random">Random glitch field</option><option value="cascade">Orbital cascade</option><option value="face-scan">Cube-face scan</option><option value="eruption" selected>Eruption build</option><option value="breathing">Slow breathing field</option></select></label>
+              <div class="material-control-grid">
+                ${[
+                  ["patchCount", "Active quadrants", 3, 12, 1, DEFAULT_LIVING_SKIN_CONTROLS.patchCount],
+                  ["variety", "Shader variety", 0, 1, 0.01, DEFAULT_LIVING_SKIN_CONTROLS.variety],
+                  ["glitch", "Rhythmic syncopation", 0, 1, 0.01, DEFAULT_LIVING_SKIN_CONTROLS.glitch],
+                  ["flashRate", "Beat subdivision", 0, 1, 0.01, DEFAULT_LIVING_SKIN_CONTROLS.flashRate],
+                  ["bpm", "Beat tempo", 54, 180, 1, DEFAULT_LIVING_SKIN_CONTROLS.bpm],
+                  ["eventHold", "Rhythmic scatter", 0, 1, 0.01, DEFAULT_LIVING_SKIN_CONTROLS.eventHold],
+                  ["phraseEvolution", "16-bar phrase evolution", 0, 1, 0.01, DEFAULT_LIVING_SKIN_CONTROLS.phraseEvolution],
+                  ["attackSharpness", "Attack sharpness", 0, 1, 0.01, DEFAULT_LIVING_SKIN_CONTROLS.attackSharpness],
+                  ["breath", "Patch breathing", 0, 1, 0.01, DEFAULT_LIVING_SKIN_CONTROLS.breath],
+                  ["edgeSoftness", "Panel edge softness", 0, 1, 0.01, DEFAULT_LIVING_SKIN_CONTROLS.edgeSoftness],
+                ].map(([id, label, min, max, step, value]) => `<label class="material-slider"><span>${label}<output>${id === "patchCount" || id === "bpm" ? value : Number(value).toFixed(2)}</output></span><input type="range" min="${min}" max="${max}" step="${step}" value="${value}" data-living-skin-control="${id}" aria-label="${label}"></label>`).join("")}
+              </div>
+              <small class="control-note">Every visual cut stays on the 4/4 clock, but regions hold independently for an eighth of a beat, quarter beat, half beat, one beat, two beats or a whole bar. The 16-bar phrase joins two 8-bar arcs through emergence, breakdown, accumulation, suspension, fracture, crescendo, release and a brief void.</small>
+              <div class="section-heading social-output-heading">
+                <span>SCENE CAMERA</span>
+                <small>Prismatica-style smooth shot route</small>
+              </div>
+              <label class="switch-row"><span>Smooth three-angle tour</span><input id="cinematic-camera-tour" type="checkbox"></label>
+              <div class="cinematic-camera-grid">
+                ${(["a", "b", "c"] as const).map((slot, index) => `<div class="camera-shot-card"><label class="editor-field"><span>Shot ${slot.toUpperCase()}</span><select id="cinematic-camera-${slot}">${Object.entries(SOCIAL_CAMERA_PRESETS).map(([id, preset]) => `<option value="${id}"${id === [DEFAULT_CINEMATIC_SCENE_CONTROLS.cameraA, DEFAULT_CINEMATIC_SCENE_CONTROLS.cameraB, DEFAULT_CINEMATIC_SCENE_CONTROLS.cameraC][index] ? " selected" : ""}>${preset.label}</option>`).join("")}</select></label><button type="button" data-camera-focus="${slot}">Go to shot</button></div>`).join("")}
+              </div>
+              <label class="fan-test-control"><span>Move duration <output id="cinematic-camera-duration-value">${DEFAULT_CINEMATIC_SCENE_CONTROLS.transitionSeconds} sec</output></span><input id="cinematic-camera-duration" type="range" min="2" max="18" step="1" value="${DEFAULT_CINEMATIC_SCENE_CONTROLS.transitionSeconds}" aria-label="Camera transition duration"></label>
+              <label class="fan-test-control"><span>Hold on each shot <output id="cinematic-camera-hold-value">${DEFAULT_CINEMATIC_SCENE_CONTROLS.holdSeconds} sec</output></span><input id="cinematic-camera-hold" type="range" min="0" max="12" step="1" value="${DEFAULT_CINEMATIC_SCENE_CONTROLS.holdSeconds}" aria-label="Camera hold duration"></label>
+              <div class="scene-switches cinematic-visibility-grid">
+                <label class="switch-row"><span>Projector bodies</span><input id="cinematic-projector-bodies" type="checkbox" checked></label>
+                <label class="switch-row"><span>Projector light throws</span><input id="cinematic-projector-throws" type="checkbox" checked></label>
+                <label class="switch-row"><span>Technical guides</span><input id="cinematic-technical-guides" type="checkbox"></label>
+                <label class="switch-row"><span>Fan rig</span><input id="cinematic-fan-rig" type="checkbox" checked></label>
+                <label class="switch-row"><span>Speaker rig</span><input id="cinematic-speaker-rig" type="checkbox"></label>
+                <label class="switch-row"><span>Room architecture</span><input id="cinematic-room-architecture" type="checkbox" checked></label>
+              </div>
+              <div class="section-heading social-output-heading">
+                <span>SOCIAL CAPTURE</span>
+                <small>clean high-resolution exports</small>
+              </div>
+              <label class="editor-field"><span>Output ratio</span><select id="social-aspect">${Object.entries(SOCIAL_ASPECT_PRESETS).map(([id, preset]) => `<option value="${id}">${preset.label} · ${preset.width}×${preset.height}</option>`).join("")}</select></label>
+              <label class="editor-field"><span>Camera angle</span><select id="social-camera">${Object.entries(SOCIAL_CAMERA_PRESETS).map(([id, preset]) => `<option value="${id}">${preset.label}</option>`).join("")}</select></label>
+              <div class="shader-action-row">
+                <button id="capture-social-still" class="wide-button primary-action" type="button">Export PNG still</button>
+                <button id="record-social-clip" class="wide-button" type="button">Record 6 sec WebM</button>
+              </div>
+              <small class="control-note">Cinematic Mosaic flashes geometric shader panels independently. Leave it off to test one shader over the complete sphere. Scene Camera changes the live presentation view, while Social Capture exports a chosen camera.</small>
+            </section>
+
+            <section class="control-section region-section expert-only" data-workspace-panel="looks">
               <div class="section-heading">
                 <span>SURFACE REGIONS</span>
                 <small>stack different shaders on the sphere</small>
@@ -2598,6 +4164,74 @@ export class StudioUI {
             </section>
 
             <div class="secondary-section module-stack">
+            <section class="control-section projector-test-section" data-workspace-panel="projector-test">
+              <div class="section-heading">
+                <span>PHYSICAL PROJECTOR TEST</span>
+                <small>deterministic fullscreen output</small>
+              </div>
+              <div class="projector-test-verdict">
+                <strong id="projector-test-status">READY · no physical signal confirmed</strong>
+                <span>The browser measurement is useful diagnostic evidence, not proof of the mode accepted by the projector.</span>
+              </div>
+              <canvas id="projector-test-preview" class="projector-test-preview" width="480" height="270" aria-label="Selected projector test pattern preview"></canvas>
+              <div class="projector-test-pattern-heading"><strong id="projector-test-pattern-readout">LATENCY FLASH</strong><span>Space cycles patterns in the output window</span></div>
+              <label class="editor-field"><span>Test pattern</span><select id="projector-test-pattern">${PROJECTOR_TEST_PATTERNS.map((pattern) => `<option value="${pattern.id}"${pattern.id === "latency" ? " selected" : ""}>${pattern.label}</option>`).join("")}</select></label>
+              <div class="projector-test-shortcuts" aria-label="Projector test pattern shortcuts">
+                <button type="button" data-projector-test-pattern="latency">Latency</button>
+                <button type="button" data-projector-test-pattern="grid">Grid</button>
+                <button type="button" data-projector-test-pattern="focus">Focus</button>
+                <button type="button" data-projector-test-pattern="circles">Circles</button>
+                <button type="button" data-projector-test-pattern="white">White</button>
+                <button type="button" data-projector-test-pattern="black">Black</button>
+              </div>
+              <div class="projector-test-signal-grid">
+                <label class="editor-field"><span>Requested raster</span><select id="projector-test-resolution"><option value="1920x1080" selected>1920 × 1080</option><option value="3840x2160">3840 × 2160</option><option value="1280x720">1280 × 720</option></select></label>
+                <label class="editor-field"><span>Requested refresh</span><select id="projector-test-refresh"><option value="60">60 Hz</option><option value="120" selected>120 Hz</option><option value="240">240 Hz</option></select></label>
+              </div>
+              <label class="switch-row"><span>Show frame counter and evidence overlay</span><input id="projector-test-overlay" type="checkbox" checked></label>
+              <dl class="metric-grid projector-test-metrics">
+                <div><dt>Observed cadence</dt><dd id="projector-test-observed-hz">Not measured</dd></div>
+                <div><dt>Accepted signal</dt><dd>Projector check required</dd></div>
+              </dl>
+              <button id="open-projector-test" class="primary-action wide-button" type="button">Open projector test output</button>
+              <small class="control-note">Use Full screen on the projector display. For the latency test, film the physical sphere and projected flash together with a high-speed camera. The alternating field and frame counter run from the output window's own animation clock.</small>
+              <div class="projector-test-record">
+                <div class="section-heading"><span>TEST RECORD</span><small>export after each projector session</small></div>
+                <label class="editor-field"><span>Projector preset</span><select id="projector-test-preset">${PROJECTOR_TEST_PRESETS.map((preset) => `<option value="${preset.id}"${preset.id === DEFAULT_PROJECTOR_TEST_PRESET_ID ? " selected" : ""}>${preset.label}</option>`).join("")}<option value="custom">Custom / another projector</option></select></label>
+                <div class="projector-test-record-grid">
+                  <label class="editor-field"><span>Projector model</span><input id="projector-test-model" type="text" value="Sharp XP-P601Q-W / XP-P60Q-W"></label>
+                  <label class="editor-field"><span>Serial number</span><input id="projector-test-serial" type="text"></label>
+                  <label class="editor-field"><span>Firmware</span><input id="projector-test-firmware" type="text"></label>
+                  <label class="editor-field"><span>Lens / throw</span><input id="projector-test-lens" type="text" value="Integrated motorised 1.6× zoom · 1.25–2.0:1 throw · H ±25% / V +55% shift"></label>
+                  <label class="editor-field"><span>Projector signal screen</span><input id="projector-test-signal-mode" type="text" placeholder="1920 × 1080 at 120 Hz"></label>
+                  <label class="editor-field"><span>Image mode</span><input id="projector-test-image-mode" type="text" placeholder="Game / Fast"></label>
+                  <label class="editor-field"><span>Throw distance, m</span><input id="projector-test-throw-distance" type="number" min="0" step="0.01"></label>
+                  <label class="editor-field"><span>Image width, m</span><input id="projector-test-image-width" type="number" min="0" step="0.01"></label>
+                  <label class="editor-field"><span>Recording frame rate</span><input id="projector-test-recording-fps" type="number" min="0" step="1" placeholder="240"></label>
+                  <label class="editor-field"><span>Best latency, ms</span><input id="projector-test-latency-best" type="number" min="0" step="0.01"></label>
+                  <label class="editor-field"><span>Median latency, ms</span><input id="projector-test-latency-median" type="number" min="0" step="0.01"></label>
+                  <label class="editor-field"><span>Worst latency, ms</span><input id="projector-test-latency-worst" type="number" min="0" step="0.01"></label>
+                  <label class="editor-field"><span>Curved-surface focus</span><select id="projector-test-focus-verdict">${PROJECTOR_TEST_OBSERVATION_VERDICTS.map((verdict) => `<option value="${verdict.id}">${verdict.label}</option>`).join("")}</select></label>
+                  <label class="editor-field"><span>Material brightness / contrast</span><select id="projector-test-material-verdict">${PROJECTOR_TEST_OBSERVATION_VERDICTS.map((verdict) => `<option value="${verdict.id}">${verdict.label}</option>`).join("")}</select></label>
+                  <label class="editor-field"><span>Physical-test verdict</span><select id="projector-test-physical-verdict">${PROJECTOR_TEST_PHYSICAL_VERDICTS.map((verdict) => `<option value="${verdict.id}">${verdict.label}</option>`).join("")}</select></label>
+                </div>
+                <label class="switch-row projector-confirm-row"><span>Projector information screen confirms the recorded signal mode</span><input id="projector-test-confirmed" type="checkbox"></label>
+                <label class="editor-field"><span>Session notes</span><textarea id="projector-test-notes" rows="4" placeholder="Focus, edge sharpness, colour, artifacts, latency camera and clip reference">Sharp evaluation pretest. Start at 1080p120, attempt 1080p240 only if the projector information screen confirms it, then test 4K60 and 1080p60. Record the exact unit, firmware and processing settings. Published synchronization support is not an input-lag measurement. No purchase, loan, publicity or partnership commitment.</textarea></label>
+                <button id="export-projector-test" class="wide-button" type="button">Export test result JSON</button>
+              </div>
+              <div class="projector-test-comparison">
+                <div class="section-heading"><span>TEST COMPARISON</span><small>measured records only</small></div>
+                <div class="projector-comparison-actions">
+                  <button id="import-projector-tests" class="wide-button" type="button">Import test records</button>
+                  <button id="clear-projector-tests" type="button">Clear</button>
+                  <input id="projector-test-import" type="file" accept=".json,application/json" multiple hidden>
+                </div>
+                <div id="projector-test-comparison-status" class="projector-comparison-status" data-state="empty">No test records loaded</div>
+                <div id="projector-test-comparison-grid" class="projector-comparison-grid"></div>
+                <small class="control-note">Import up to two exported Orbital projector test records. Missing latency, throw or verdict fields remain unmeasured and are never converted into a pass.</small>
+              </div>
+            </section>
+
             <section class="control-section system-section" data-workspace-panel="tracking">
               <div class="section-heading">
                 <span>TRACKING / SHAPE LOCK</span>
@@ -2606,7 +4240,7 @@ export class StudioUI {
               <dl class="metric-grid">
                 <div><dt>Confidence</dt><dd id="confidence-value">100%</dd></div>
                 <div><dt>Source age</dt><dd id="source-age-value">0.0 ms</dd></div>
-                <div><dt>Cameras</dt><dd id="camera-count-value">4</dd></div>
+                <div><dt>Cameras</dt><dd id="camera-count-value">0 physical</dd></div>
                 <div><dt>Residual</dt><dd id="residual-value">0 mm</dd></div>
               </dl>
               <dl class="metric-list">
@@ -2625,9 +4259,28 @@ export class StudioUI {
                 <small>five simulated outputs</small>
               </div>
               <dl class="metric-grid">
-                <div><dt>Rig</dt><dd id="projection-rig-status">5/5 active</dd></div>
+                <div><dt>Rig</dt><dd id="projection-rig-status">5/5 active · portrait</dd></div>
                 <div><dt>Calibration</dt><dd id="projection-calibration-status">SIMULATED</dd></div>
               </dl>
+              <div class="installation-rig-card">
+                <div class="section-heading"><span>INSTALLATION DIGITAL TWIN</span><small>planning geometry, not physical proof</small></div>
+                <label class="editor-field"><span>Rig mode</span><select id="installation-rig-mode"><option value="prototype-1" selected>Prototype · 1 projector + 1 camera + 1 NIR</option><option value="production-5">Production rehearsal · 5 projectors + 3 cameras + 3 NIR</option></select></label>
+                <label class="editor-field"><span>Prototype head</span><select id="installation-prototype-head">${[1, 2, 3, 4, 5].map((index) => `<option value="${index - 1}"${index === 1 ? " selected" : ""}>P${index}</option>`).join("")}</select></label>
+                <div class="installation-optics-grid">
+                  <label class="editor-field"><span>Projector optic</span><select id="installation-projector-optic">${PROJECTOR_OPTICAL_PRESETS.map((preset) => `<option value="${preset.id}"${preset.id === DEFAULT_INSTALLATION_RIG_CONTROLS.projectorOpticId ? " selected" : ""}>${preset.label}</option>`).join("")}</select></label>
+                  <label class="editor-field"><span>Camera lens</span><select id="installation-camera-lens">${CAMERA_LENS_PRESETS.map((preset) => `<option value="${preset.id}"${preset.id === DEFAULT_INSTALLATION_RIG_CONTROLS.cameraLensId ? " selected" : ""}>${preset.label} · ${preset.horizontalFovDeg.toFixed(0)}° HFOV</option>`).join("")}</select></label>
+                  <label class="editor-field"><span>Infrared light</span><select id="installation-nir-light">${NIR_ILLUMINATOR_PRESETS.map((preset) => `<option value="${preset.id}"${preset.id === DEFAULT_INSTALLATION_RIG_CONTROLS.nirIlluminatorId ? " selected" : ""}>${preset.label}</option>`).join("")}</select></label>
+                </div>
+                <label class="calibration-slider"><span>Camera offset from projector <output id="installation-camera-separation-value">${DEFAULT_INSTALLATION_RIG_CONTROLS.cameraSeparationM.toFixed(2)} m</output></span><input id="installation-camera-separation" type="range" min="0" max="2.5" step="0.05" value="${DEFAULT_INSTALLATION_RIG_CONTROLS.cameraSeparationM}"></label>
+                <label class="calibration-slider"><span>Haze density <output id="installation-haze-value">${Math.round(DEFAULT_INSTALLATION_RIG_CONTROLS.hazeDensity * 100)}%</output></span><input id="installation-haze" type="range" min="0" max="1" step="0.01" value="${DEFAULT_INSTALLATION_RIG_CONTROLS.hazeDensity}"></label>
+                <div class="scene-switches installation-visibility-grid">
+                  <label class="switch-row"><span>Truss towers</span><input id="installation-show-truss" type="checkbox" checked></label>
+                  <label class="switch-row"><span>Tracking cameras</span><input id="installation-show-cameras" type="checkbox" checked></label>
+                  <label class="switch-row"><span>NIR illuminators</span><input id="installation-show-nir" type="checkbox" checked></label>
+                </div>
+                <dl class="metric-grid"><div><dt>Active heads</dt><dd id="installation-rig-counts">1P · 1C · 1 NIR</dd></div><div><dt id="installation-distance-label">P1 optical path</dt><dd id="installation-distance">15.7 m</dd></div></dl>
+                <small class="control-note">Cameras are intentionally near, but not exactly co-located with projectors. The offset protects the tracking view from direct optical interference and is editable. Every device and lens entry is provisional until the exact hardware and venue are measured.</small>
+              </div>
               <label class="editor-field">
                 <span>Preview pattern</span>
                 <select id="projection-pattern">
@@ -2638,24 +4291,34 @@ export class StudioUI {
                   <option value="black">Black / alignment</option>
                 </select>
               </label>
+              <div id="coverage-summary" class="coverage-summary" data-status="warning"><strong>Analysing moving envelope</strong><span>Coverage updates from the current tracked shape</span></div>
+              <div class="output-routing-card">
+                <div class="section-heading"><span>OUTPUT WINDOWS</span><small>separate projector output windows</small></div>
+                <div class="orientation-readout"><strong>PORTRAIT RIG</strong><span>Long axis vertical for the full hover envelope</span></div>
+                <div class="output-routing-controls"><label><span>Requested output raster</span><select id="output-resolution"><option value="1200x1920" selected>1200 × 1920</option><option value="1600x2560">1600 × 2560</option><option value="2400x3840">2400 × 3840</option></select></label><label><span>Refresh</span><select id="output-refresh"><option value="60" selected>60 Hz</option><option value="50">50 Hz</option><option value="30">30 Hz</option></select></label></div>
+                <div class="output-window-buttons">${[1,2,3,4,5].map((index) => `<button type="button" data-open-output-window="projector-${index}">Open P${index}</button>`).join("")}</div>
+                <small>Open windows render directly at the selected native pixel dimensions. Dashboard tiles remain lightweight previews. Browser monitor routing only, physical EDID assignment and frame-lock still require hardware verification.</small>
+              </div>
               <div class="auto-calibration-card">
                 <div class="calibration-card-heading">
                   <div><span>AUTOMATIC CALIBRATION</span><strong>Camera-assisted stitch + blend</strong></div>
                   <span class="simulation-badge">SIMULATION</span>
                 </div>
-                <p>One guided pass locates the sphere, scans structured-light patterns, solves five warp meshes, builds overlap masks, then validates the seams.</p>
+                <p>This rehearsal generates deterministic example calibration. It does not capture camera observations or solve physical alignment. Import measured calibration through the Test bench.</p>
                 <ol id="calibration-stages" class="calibration-stages">
-                  <li><i>1</i><span>Check cameras and outputs</span><strong>WAIT</strong></li>
+                  <li><i>1</i><span>Lock five portrait outputs</span><strong>WAIT</strong></li>
                   <li><i>2</i><span>Locate the sphere</span><strong>WAIT</strong></li>
                   <li><i>3</i><span>Scan projected patterns</span><strong>WAIT</strong></li>
                   <li><i>4</i><span>Solve five warp meshes</span><strong>WAIT</strong></li>
                   <li><i>5</i><span>Build overlap masks</span><strong>WAIT</strong></li>
-                  <li><i>6</i><span>Validate with seam grid</span><strong>WAIT</strong></li>
+                  <li><i>6</i><span>Validate vertical hover range</span><strong>WAIT</strong></li>
                 </ol>
                 <label class="calibration-slider"><span>Overlap <output id="calibration-overlap-value">14%</output></span><input id="calibration-overlap" type="range" min="0.04" max="0.34" step="0.01" value="0.14"></label>
                 <label class="calibration-slider"><span>Feather curve <output id="calibration-feather-value">2.2</output></span><input id="calibration-feather" type="range" min="0.5" max="4" step="0.1" value="2.2"></label>
                 <label class="calibration-slider"><span>Black level <output id="calibration-black-level-value">2%</output></span><input id="calibration-black-level" type="range" min="0" max="0.12" step="0.005" value="0.02"></label>
-                <button id="run-auto-calibration" class="wide-button primary-action" type="button">Run automatic calibration</button>
+                <div class="calibration-point-capture"><strong id="calibration-step-title">Start with locked hardware</strong><span id="calibration-step-help">The wizard will guide each physical stage and keep simulation clearly labelled.</span><output id="calibration-point-count">0 / 6 alignment points</output></div>
+                <div class="calibration-wizard-actions"><button id="calibration-back" type="button" disabled>Back</button><button id="calibration-capture-point" type="button" disabled>Add rehearsal point</button><button id="run-auto-calibration" class="primary-action" type="button">Start simulated rehearsal</button></div>
+                <button id="export-calibration" class="wide-button" type="button" disabled>Export calibration JSON</button>
                 <div id="calibration-summary" class="calibration-summary"><strong>Not run</strong><span>Browser rehearsal only</span></div>
               </div>
               <div class="projector-layout" aria-label="Five projector levels">
@@ -2674,14 +4337,60 @@ export class StudioUI {
               <small class="control-note">Per-edge feather masks are normalized across all five projector contributions as the tracked envelope moves. A camera measurement is still required before this can describe a physical installation.</small>
             </section>
 
+            <section class="control-section recorded-tracking-section" data-workspace-panel="tracking">
+              <div class="section-heading">
+                <span>STAGE A / RECORDED TRACKING</span>
+                <small>video-to-envelope commissioning lab</small>
+              </div>
+              <label class="recorded-tracking-file">
+                <span>Balloon test footage</span>
+                <input id="recorded-tracking-file" type="file" accept="video/*,.mov,.mp4,.m4v,.webm">
+              </label>
+              <div class="recorded-tracking-actions">
+                <button id="recorded-tracking-play" type="button" disabled>Play tracking</button>
+                <button id="recorded-tracking-stop" type="button" disabled>Return to simulation</button>
+              </div>
+              <video id="recorded-tracking-video" muted loop playsinline preload="metadata" hidden></video>
+              <div class="tracking-vision-grid">
+                <figure><canvas id="tracking-raw-canvas" width="320" height="180"></canvas><figcaption>RAW VIDEO</figcaption></figure>
+                <figure><canvas id="tracking-mask-canvas" width="320" height="180"></canvas><figcaption>SILHOUETTE MASK</figcaption></figure>
+                <figure><canvas id="tracking-fit-canvas" width="320" height="180"></canvas><figcaption>FITTED ENVELOPE</figcaption></figure>
+              </div>
+              <label class="calibration-slider"><span>White threshold <output id="recorded-tracking-threshold-value">135</output></span><input id="recorded-tracking-threshold" type="range" min="40" max="245" step="1" value="135"></label>
+              <dl class="metric-grid recorded-tracking-metrics">
+                <div><dt>Detector</dt><dd id="recorded-tracking-status">NO VIDEO</dd></div>
+                <div><dt>Confidence</dt><dd id="recorded-tracking-confidence">0%</dd></div>
+                <div><dt>Boundary fit</dt><dd id="recorded-tracking-fit">OPEN</dd></div>
+                <div><dt>Processing</dt><dd id="recorded-tracking-processing">0.0 ms</dd></div>
+              </dl>
+              <small class="control-note">This browser path is for recorded visible-light rehearsal. It uses the same world-state boundary as the future global-shutter NIR adapter, but does not claim physical calibration or 3D reconstruction.</small>
+            </section>
+
+            <section class="control-section live-bridge-section" data-workspace-panel="tracking">
+              <div class="section-heading">
+                <span>LOCAL LIVE BRIDGE</span>
+                <small>fused state only</small>
+              </div>
+              <div id="live-bridge-endpoint" class="camera-profile-readout">ws://127.0.0.1:8765</div>
+              <dl class="metric-grid">
+                <div><dt>Connection</dt><dd id="live-bridge-connection">DISCONNECTED</dd></div>
+                <div><dt>Source</dt><dd id="live-bridge-source">WAITING</dd></div>
+                <div><dt>States</dt><dd id="live-bridge-frames">0</dd></div>
+                <div><dt>Dropped</dt><dd id="live-bridge-drops">0</dd></div>
+                <div><dt>Processing</dt><dd id="live-bridge-processing">WAITING</dd></div>
+                <div><dt>Browser feeds</dt><dd>0 RAW</dd></div>
+              </dl>
+              <small class="control-note">Choose Live gate above to connect. The Stage A bridge captures the HuaTeng camera at 1024 × 768 Mono8 and targets 91 fps. Only compact tracking state crosses this socket, never raw camera frames.</small>
+            </section>
+
             <section class="control-section camera-section" data-workspace-panel="tracking">
               <div class="section-heading">
                 <span>CAMERA TRACKING</span>
-                <small>five-head lifecycle rehearsal</small>
+                <small>one-camera Stage A profile</small>
               </div>
               <dl class="metric-grid">
                 <div><dt>Rig state</dt><dd id="camera-rig-status">OFFLINE</dd></div>
-                <div><dt>Active</dt><dd id="camera-rig-count">0/5</dd></div>
+                <div><dt>Active</dt><dd id="camera-rig-count">VIRTUAL 0/1</dd></div>
               </dl>
               <label class="editor-field">
                 <span>Camera profile</span>
@@ -2692,11 +4401,11 @@ export class StudioUI {
                   ).join("")}
                 </select>
               </label>
-              <div class="camera-profile-readout" id="camera-profile-readout">Basler ace 2 a2A2048-114g5mBAS</div>
+              <div class="camera-profile-readout" id="camera-profile-readout">HuaTeng Vision HT-GE134GM-T1P-C</div>
               <div class="camera-settings-grid">
                 <label class="editor-field">
                   <span>Exposure (µs)</span>
-                  <input id="camera-exposure" type="number" min="1" max="100000" step="100" value="2500">
+                  <input id="camera-exposure" type="number" min="1" max="100000" step="100" value="3000">
                 </label>
                 <label class="editor-field">
                   <span>Gain (dB)</span>
@@ -2710,7 +4419,7 @@ export class StudioUI {
                 <button id="camera-stream" type="button">Start stream</button>
               </div>
               <div id="camera-health-list" class="camera-health-list"></div>
-              <small class="control-note">Default shortlist is an NIR-capable global-shutter profile. All buttons currently exercise a no-write simulator, not the camera hardware.</small>
+              <small class="control-note">This is a virtual HuaTeng profile. These lifecycle buttons remain a safe no-write rehearsal; physical acquisition is controlled by the native HuaTeng bridge.</small>
             </section>
             </div>
 
@@ -2729,14 +4438,14 @@ export class StudioUI {
                 <figcaption>Example top view. P1–P5 cover the ball; C1–C4 watch the surface without blocking the projection paths.</figcaption>
               </figure>
               <div class="guide-steps">
-                <article><i>1</i><div><h3>Place the physical rig</h3><p>Centre the fan and ball. Lock every projector and camera mount. Mark all floor positions. Do not move hardware after calibration.</p></div></article>
-                <article><i>2</i><div><h3>Connect outputs and cameras</h3><p>Connect one computer output to each projector and label them P1 to P5. Connect the global-shutter cameras, then open <strong>Tracking</strong> and press Discover, Arm, Start stream.</p></div></article>
-                <article><i>3</i><div><h3>Darken and focus</h3><p>Set each projector to the same resolution, refresh rate, colour mode and focus. Avoid automatic keystone, dynamic contrast and image enhancement.</p></div></article>
+                <article><i>1</i><div><h3>Mount every projector in portrait</h3><p>First confirm the exact projector model permits 90° roll operation and that its cooling path remains compliant. Centre the fan and ball, then secure P1 to P5 on rated mounts with each supported projector physically rotated onto its side. Use the same rotation direction for all outputs, mark every position and do not move hardware after calibration.</p></div></article>
+                <article><i>2</i><div><h3>Connect portrait outputs and cameras</h3><p>Connect one computer output to each projector and label them P1 to P5. In the operating system or native renderer, rotate each display 90° and confirm a 1200 × 1920 portrait raster before calibration. Then connect the global-shutter camera and use <strong>Test bench</strong> to discover, configure and start the native bridge.</p></div></article>
+                <article><i>3</i><div><h3>Darken, identify and focus</h3><p>Set every projector to the same portrait resolution, refresh rate, colour mode and focus. Use Identify to confirm the labelled top edge. Focus and frame the complete balloon from its minimum to maximum fan height. Avoid automatic keystone, dynamic contrast and image enhancement.</p></div></article>
                 <article><i>4</i><div><h3>Find the ball</h3><p>Check that every camera can see the full silhouette. The live gate must report a valid centre, shape and confidence before measured calibration can begin.</p></div></article>
-                <article><i>5</i><div><h3>Run automatic calibration</h3><p>Open <strong>Projection</strong> and press Run automatic calibration. Each projector flashes coded patterns in turn. The cameras identify corresponding surface points and the solver creates five warp meshes.</p></div></article>
-                <article><i>6</i><div><h3>Inspect P1 to P5</h3><p>Use P1–P5 under the sphere or press Inspect on a tile. The post-warp view shows the image after geometry correction and edge feathering, exactly according to the loaded calibration dataset.</p></div></article>
+                <article><i>5</i><div><h3>Import measured calibration</h3><p>Use an external measured camera/projector solve and import its JSON in <strong>Test bench</strong>. The Projection wizard generates simulated rehearsal data only.</p></div></article>
+                <article><i>6</i><div><h3>Inspect P1 to P5 in portrait</h3><p>Each tall tile is a live 10:16 render from its real projector camera. POST shows the tracked geometry with that projector's feather mask and black level. Press POST to switch to the canonical PRE source. Press Inspect to expand, zoom up to 3×, enter full screen or open a separate portrait window.</p></div></article>
                 <article><i>7</i><div><h3>Check the seams</h3><p>Select Seam test. Look at every overlap on the physical ball. Adjust overlap, feather curve and black level, then repeat validation until no bright or dark bands remain.</p></div></article>
-                <article><i>8</i><div><h3>Test movement</h3><p>Run the grid while the ball rises, falls and bulges. The content should remain locked to the changing surface. If it slips, fix camera visibility or latency before using authored looks.</p></div></article>
+                <article><i>8</i><div><h3>Test the full vertical movement</h3><p>Run the grid while the ball rises, falls and bulges. Move fan speed through the complete planned range and confirm the sphere remains inside every portrait raster. In simulation, the Scene &amp; Lift readout shows Bernoulli flow lock, lateral displacement and hover offset. If content slips physically, fix camera visibility or latency before using authored looks.</p></div></article>
                 <article class="guide-warning"><i>!</i><div><h3>Keep safety independent</h3><p>The fan requires its own rated controller, emergency stop, guards and physical supervision. The browser app is not a safety controller.</p></div></article>
               </div>
               <a class="wide-button guide-download" href="/docs/Orbital_Studio_Installation_Guide.pdf" target="_blank" rel="noreferrer">Open illustrated PDF booklet</a>

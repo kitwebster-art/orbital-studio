@@ -1,0 +1,2371 @@
+{
+  "schemaVersion": "orbital.shader-manifest/1.0",
+  "sourceRegistrySchemaVersion": "orbital.shader-registry/1.0",
+  "fallbackShaderId": "neutral",
+  "shaders": [
+    {
+      "id": "neutral",
+      "name": "Neutral membrane",
+      "family": "neutral",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:neutral",
+      "parameters": [
+        {
+          "id": "intensity",
+          "label": "Intensity",
+          "type": "unit",
+          "defaultValue": 0.06,
+          "description": "Conservative output level for a neutral surface.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "grain",
+          "label": "Grain",
+          "type": "unit",
+          "defaultValue": 0,
+          "description": "Optional low-amplitude membrane grain.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "low",
+      "safeLuminanceCeiling": 0.18
+    },
+    {
+      "id": "contour-field",
+      "name": "Contour field",
+      "family": "contour",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:contour-field",
+      "parameters": [
+        {
+          "id": "lineDensity",
+          "label": "Line density",
+          "type": "unit",
+          "defaultValue": 0.28,
+          "description": "Density of contour bands.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "lineContrast",
+          "label": "Line contrast",
+          "type": "unit",
+          "defaultValue": 0.46,
+          "description": "Contrast against the dark membrane.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "motion",
+          "label": "Motion",
+          "type": "unit",
+          "defaultValue": 0.18,
+          "description": "Slow authored surface drift.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "residualTrace",
+          "label": "Residual trace",
+          "type": "unit",
+          "defaultValue": 0.1,
+          "description": "Visibility of prediction error in the contour field.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "low",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "fluid-membrane",
+      "name": "Fluid membrane",
+      "family": "fluid",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:fluid-membrane",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Field scale",
+          "type": "unit",
+          "defaultValue": 0.54,
+          "description": "Spatial scale of the membrane field.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "turbulence",
+          "label": "Turbulence",
+          "type": "unit",
+          "defaultValue": 0.38,
+          "description": "Amplitude of layered flow.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "flow",
+          "label": "Flow",
+          "type": "unit",
+          "defaultValue": 0.42,
+          "description": "Speed of the authored field drift.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "luminousBody",
+          "label": "Luminous body",
+          "type": "unit",
+          "defaultValue": 0.32,
+          "description": "Amount of surface body above black level.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "residualTint",
+          "label": "Residual tint",
+          "type": "unit",
+          "defaultValue": 0.2,
+          "description": "Warm separation when observed and predicted states diverge.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "water-caustics",
+      "name": "Water caustics",
+      "family": "water",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:water-caustics",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Wave scale",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Spatial scale of the caustic field.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "turbulence",
+          "label": "Turbulence",
+          "type": "unit",
+          "defaultValue": 0.34,
+          "description": "Distortion of the crossing waves.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "flow",
+          "label": "Flow",
+          "type": "unit",
+          "defaultValue": 0.36,
+          "description": "Speed of the water drift.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "caustic",
+          "label": "Caustic contrast",
+          "type": "unit",
+          "defaultValue": 0.62,
+          "description": "Brightness of the intersecting light bands.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "depth",
+          "label": "Depth",
+          "type": "unit",
+          "defaultValue": 0.42,
+          "description": "Dark body between the caustic highlights.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "turbulence-smoke",
+      "name": "Turbulence smoke",
+      "family": "turbulence",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:turbulence-smoke",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Cloud scale",
+          "type": "unit",
+          "defaultValue": 0.58,
+          "description": "Scale of the turbulence field.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "turbulence",
+          "label": "Turbulence",
+          "type": "unit",
+          "defaultValue": 0.56,
+          "description": "Amount of layered distortion.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "flow",
+          "label": "Flow",
+          "type": "unit",
+          "defaultValue": 0.24,
+          "description": "Drift speed of the smoke.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "density",
+          "label": "Density",
+          "type": "unit",
+          "defaultValue": 0.46,
+          "description": "Amount of visible body.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "contrast",
+          "label": "Contrast",
+          "type": "unit",
+          "defaultValue": 0.34,
+          "description": "Separation between cloud layers.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "fire-ember",
+      "name": "Fire and ember",
+      "family": "fire",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:fire-ember",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Flame scale",
+          "type": "unit",
+          "defaultValue": 0.44,
+          "description": "Spatial scale of the flame field.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "turbulence",
+          "label": "Turbulence",
+          "type": "unit",
+          "defaultValue": 0.42,
+          "description": "Distortion of the rising flame.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "rise",
+          "label": "Rise",
+          "type": "unit",
+          "defaultValue": 0.58,
+          "description": "Vertical travel of the fire field.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "heat",
+          "label": "Heat",
+          "type": "unit",
+          "defaultValue": 0.64,
+          "description": "Hot core intensity.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "sparks",
+          "label": "Sparks",
+          "type": "unit",
+          "defaultValue": 0.22,
+          "description": "Sparse high-frequency ember marks.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "matrix-rain",
+      "name": "Matrix rain",
+      "family": "matrix",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:matrix-rain",
+      "parameters": [
+        {
+          "id": "columns",
+          "label": "Columns",
+          "type": "unit",
+          "defaultValue": 0.54,
+          "description": "Number of digital rain columns.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "speed",
+          "label": "Speed",
+          "type": "unit",
+          "defaultValue": 0.46,
+          "description": "Downward speed of the rain.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "trail",
+          "label": "Trail",
+          "type": "unit",
+          "defaultValue": 0.62,
+          "description": "Length of the luminous trail.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "glyphs",
+          "label": "Glyph density",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Density of glyph-like interruptions.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "glow",
+          "label": "Green glow",
+          "type": "unit",
+          "defaultValue": 0.36,
+          "description": "Brightness of the digital green.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "low",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "fracture-residual",
+      "name": "Fracture residual",
+      "family": "fracture",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:fracture-residual",
+      "parameters": [
+        {
+          "id": "threshold",
+          "label": "Break threshold",
+          "type": "unit",
+          "defaultValue": 0.58,
+          "description": "Amount of residual required before fracture appears.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "separation",
+          "label": "Separation",
+          "type": "unit",
+          "defaultValue": 0.36,
+          "description": "Distance between predicted and observed visual strata.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "shardScale",
+          "label": "Shard scale",
+          "type": "unit",
+          "defaultValue": 0.32,
+          "description": "Scale of fractured bands.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "glitch",
+          "label": "Glitch",
+          "type": "unit",
+          "defaultValue": 0.28,
+          "description": "Temporal stepping and controlled discontinuity.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "recovery",
+          "label": "Recovery",
+          "type": "unit",
+          "defaultValue": 0.62,
+          "description": "Rate at which the field reorganises after a peak.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.72
+    },
+    {
+      "id": "particle-interference",
+      "name": "Particle interference",
+      "family": "particle",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:particle-interference",
+      "parameters": [
+        {
+          "id": "density",
+          "label": "Particle density",
+          "type": "unit",
+          "defaultValue": 0.24,
+          "description": "Number of active traces.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "size",
+          "label": "Particle size",
+          "type": "unit",
+          "defaultValue": 0.2,
+          "description": "Screen-space particle scale.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "drift",
+          "label": "Drift",
+          "type": "unit",
+          "defaultValue": 0.35,
+          "description": "Motion of traces around the observed envelope.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "interference",
+          "label": "Interference",
+          "type": "unit",
+          "defaultValue": 0.46,
+          "description": "Strength of crossing-field structure.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "fade",
+          "label": "Fade",
+          "type": "unit",
+          "defaultValue": 0.7,
+          "description": "Decay of old traces.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.72
+    },
+    {
+      "id": "geometric-grid",
+      "name": "Geometric grid",
+      "family": "geometric",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:geometric-grid",
+      "parameters": [
+        {
+          "id": "gridScale",
+          "label": "Grid scale",
+          "type": "unit",
+          "defaultValue": 0.44,
+          "description": "Frequency of geometric lines.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "lineWidth",
+          "label": "Line width",
+          "type": "unit",
+          "defaultValue": 0.14,
+          "description": "Width of the geometric trace.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "rotation",
+          "label": "Rotation",
+          "type": "unit",
+          "defaultValue": 0.32,
+          "description": "Room-oriented rotation of the grid.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "quantisation",
+          "label": "Quantisation",
+          "type": "unit",
+          "defaultValue": 0.25,
+          "description": "Amount of discrete step behaviour.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "coverage",
+          "label": "Coverage",
+          "type": "unit",
+          "defaultValue": 0.3,
+          "description": "Fraction of surface carrying the grid.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "low",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "planetary-atmosphere",
+      "name": "Planetary atmosphere",
+      "family": "planetary",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:planetary-atmosphere",
+      "parameters": [
+        {
+          "id": "cloudScale",
+          "label": "Cloud scale",
+          "type": "unit",
+          "defaultValue": 0.62,
+          "description": "Scale of the atmospheric field.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "atmosphere",
+          "label": "Atmosphere",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Rim and horizon atmosphere.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "rotation",
+          "label": "Rotation",
+          "type": "unit",
+          "defaultValue": 0.22,
+          "description": "Slow room-oriented atmospheric drift.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "storm",
+          "label": "Storm",
+          "type": "unit",
+          "defaultValue": 0.24,
+          "description": "Large-scale field variation.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "nightSide",
+          "label": "Night side",
+          "type": "unit",
+          "defaultValue": 0.58,
+          "description": "Dark-side contrast and rest.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "prediction-ghost",
+      "name": "Prediction ghost",
+      "family": "residual",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:prediction-ghost",
+      "parameters": [
+        {
+          "id": "opacity",
+          "label": "Opacity",
+          "type": "unit",
+          "defaultValue": 0.3,
+          "description": "Maximum ghost visibility.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "scan",
+          "label": "Scan",
+          "type": "unit",
+          "defaultValue": 0.18,
+          "description": "Moving scan detail across the predicted body.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "offset",
+          "label": "Offset",
+          "type": "unit",
+          "defaultValue": 0.36,
+          "description": "Visual separation from the observed body.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "confidenceGate",
+          "label": "Confidence gate",
+          "type": "unit",
+          "defaultValue": 0.42,
+          "description": "Minimum prediction confidence before visibility.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "low",
+      "safeLuminanceCeiling": 0.72
+    },
+    {
+      "id": "geodesic-wireframe",
+      "name": "Geodesic wireframe",
+      "family": "geometric",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:geodesic-wireframe",
+      "parameters": [
+        {
+          "id": "density",
+          "label": "Lattice density",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Number of crossing great-circle bands.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "lineWidth",
+          "label": "Line width",
+          "type": "unit",
+          "defaultValue": 0.18,
+          "description": "Width of the diagnostic wire lines.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "rotation",
+          "label": "Rotation",
+          "type": "unit",
+          "defaultValue": 0.28,
+          "description": "Slow world-space lattice rotation.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "glow",
+          "label": "Glow",
+          "type": "unit",
+          "defaultValue": 0.54,
+          "description": "Luminance around the wire lines.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "subdivisions",
+          "label": "Subdivisions",
+          "type": "unit",
+          "defaultValue": 0.42,
+          "description": "Secondary structural detail.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "low",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "hex-lattice",
+      "name": "Hex lattice",
+      "family": "geometric",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:hex-lattice",
+      "parameters": [
+        {
+          "id": "spacing",
+          "label": "Cell spacing",
+          "type": "unit",
+          "defaultValue": 0.5,
+          "description": "Scale of the hexagonal cells.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "lineWidth",
+          "label": "Line width",
+          "type": "unit",
+          "defaultValue": 0.2,
+          "description": "Width of each cell boundary.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "drift",
+          "label": "Drift",
+          "type": "unit",
+          "defaultValue": 0.18,
+          "description": "Movement through the world-space lattice.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "distortion",
+          "label": "Distortion",
+          "type": "unit",
+          "defaultValue": 0.22,
+          "description": "Organic displacement of the regular cells.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "fill",
+          "label": "Cell fill",
+          "type": "unit",
+          "defaultValue": 0.26,
+          "description": "Brightness inside alternate cells.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "liquid-metal",
+      "name": "Liquid metal",
+      "family": "fluid",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:liquid-metal",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Fold scale",
+          "type": "unit",
+          "defaultValue": 0.46,
+          "description": "Scale of the metallic folds.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "flow",
+          "label": "Flow",
+          "type": "unit",
+          "defaultValue": 0.32,
+          "description": "Speed of the liquid movement.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "reflection",
+          "label": "Reflection",
+          "type": "unit",
+          "defaultValue": 0.7,
+          "description": "Strength of sharp metallic highlights.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "viscosity",
+          "label": "Viscosity",
+          "type": "unit",
+          "defaultValue": 0.62,
+          "description": "Roundness and drag of each fold.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "highlights",
+          "label": "Highlight density",
+          "type": "unit",
+          "defaultValue": 0.38,
+          "description": "Amount of bright silver detail.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "molten-lava",
+      "name": "Molten lava",
+      "family": "fire",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:molten-lava",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Crust scale",
+          "type": "unit",
+          "defaultValue": 0.44,
+          "description": "Size of the cooling plates.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "flow",
+          "label": "Molten flow",
+          "type": "unit",
+          "defaultValue": 0.28,
+          "description": "Speed below the crust.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "crust",
+          "label": "Crust",
+          "type": "unit",
+          "defaultValue": 0.64,
+          "description": "Amount of dark cooled material.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "heat",
+          "label": "Heat",
+          "type": "unit",
+          "defaultValue": 0.7,
+          "description": "Brightness of the molten channels.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "cracks",
+          "label": "Crack density",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Density of glowing fault lines.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "reaction-diffusion",
+      "name": "Reaction diffusion",
+      "family": "fluid",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:reaction-diffusion",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Pattern scale",
+          "type": "unit",
+          "defaultValue": 0.5,
+          "description": "Scale of the cell network.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "speed",
+          "label": "Evolution",
+          "type": "unit",
+          "defaultValue": 0.24,
+          "description": "Rate at which cells reorganise.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "threshold",
+          "label": "Threshold",
+          "type": "unit",
+          "defaultValue": 0.52,
+          "description": "Balance between spots and ribbons.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "contrast",
+          "label": "Contrast",
+          "type": "unit",
+          "defaultValue": 0.68,
+          "description": "Separation of active and resting cells.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "morph",
+          "label": "Morph",
+          "type": "unit",
+          "defaultValue": 0.4,
+          "description": "Amount of domain warping.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "cellular-voronoi",
+      "name": "Cellular Voronoi",
+      "family": "geometric",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:cellular-voronoi",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Cell scale",
+          "type": "unit",
+          "defaultValue": 0.46,
+          "description": "Number of cells across the sphere.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "drift",
+          "label": "Cell drift",
+          "type": "unit",
+          "defaultValue": 0.2,
+          "description": "Speed of internal cell motion.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "borders",
+          "label": "Borders",
+          "type": "unit",
+          "defaultValue": 0.7,
+          "description": "Strength of cell walls.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "fill",
+          "label": "Fill",
+          "type": "unit",
+          "defaultValue": 0.38,
+          "description": "Brightness of cell interiors.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "jitter",
+          "label": "Jitter",
+          "type": "unit",
+          "defaultValue": 0.52,
+          "description": "Irregularity of cell centres.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "marble-veins",
+      "name": "Marble veins",
+      "family": "contour",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:marble-veins",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Vein scale",
+          "type": "unit",
+          "defaultValue": 0.42,
+          "description": "Spacing of mineral layers.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "flow",
+          "label": "Flow",
+          "type": "unit",
+          "defaultValue": 0.18,
+          "description": "Slow movement through the stone.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "veinWidth",
+          "label": "Vein width",
+          "type": "unit",
+          "defaultValue": 0.26,
+          "description": "Width of bright mineral seams.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "contrast",
+          "label": "Contrast",
+          "type": "unit",
+          "defaultValue": 0.62,
+          "description": "Separation between stone and veins.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "tint",
+          "label": "Mineral tint",
+          "type": "unit",
+          "defaultValue": 0.46,
+          "description": "Warm-to-cool mineral colour balance.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "crystal-facets",
+      "name": "Crystal facets",
+      "family": "geometric",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:crystal-facets",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Facet scale",
+          "type": "unit",
+          "defaultValue": 0.42,
+          "description": "Size of the crystal planes.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "rotation",
+          "label": "Rotation",
+          "type": "unit",
+          "defaultValue": 0.16,
+          "description": "Slow turn of the internal facet field.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "facets",
+          "label": "Facet contrast",
+          "type": "unit",
+          "defaultValue": 0.72,
+          "description": "Difference between adjacent planes.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "edgeGlow",
+          "label": "Edge glow",
+          "type": "unit",
+          "defaultValue": 0.46,
+          "description": "Brightness on crystal boundaries.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "refraction",
+          "label": "Refraction",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Prismatic colour separation.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "aurora-ribbons",
+      "name": "Aurora ribbons",
+      "family": "planetary",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:aurora-ribbons",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Ribbon scale",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Spacing of the aurora curtains.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "drift",
+          "label": "Drift",
+          "type": "unit",
+          "defaultValue": 0.22,
+          "description": "Speed of the atmospheric movement.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "ribbons",
+          "label": "Ribbon density",
+          "type": "unit",
+          "defaultValue": 0.44,
+          "description": "Number of visible folds.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "glow",
+          "label": "Glow",
+          "type": "unit",
+          "defaultValue": 0.66,
+          "description": "Brightness of the aurora body.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "colourShift",
+          "label": "Colour shift",
+          "type": "unit",
+          "defaultValue": 0.52,
+          "description": "Green-to-violet palette balance.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "iridescent-film",
+      "name": "Iridescent film",
+      "family": "planetary",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:iridescent-film",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Band scale",
+          "type": "unit",
+          "defaultValue": 0.5,
+          "description": "Frequency of the interference bands.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "flow",
+          "label": "Flow",
+          "type": "unit",
+          "defaultValue": 0.24,
+          "description": "Speed of the film movement.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "bands",
+          "label": "Bands",
+          "type": "unit",
+          "defaultValue": 0.6,
+          "description": "Strength of colour interference.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "sheen",
+          "label": "Sheen",
+          "type": "unit",
+          "defaultValue": 0.56,
+          "description": "View-facing highlight intensity.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "colourShift",
+          "label": "Colour shift",
+          "type": "unit",
+          "defaultValue": 0.5,
+          "description": "Rotation through the spectral palette.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "electric-filaments",
+      "name": "Electric filaments",
+      "family": "particle",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:electric-filaments",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Branch scale",
+          "type": "unit",
+          "defaultValue": 0.5,
+          "description": "Scale of the electric network.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "speed",
+          "label": "Pulse speed",
+          "type": "unit",
+          "defaultValue": 0.46,
+          "description": "Travel speed along the filaments.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "branches",
+          "label": "Branches",
+          "type": "unit",
+          "defaultValue": 0.54,
+          "description": "Density of secondary threads.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "glow",
+          "label": "Glow",
+          "type": "unit",
+          "defaultValue": 0.72,
+          "description": "Brightness around each filament.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "sparks",
+          "label": "Sparks",
+          "type": "unit",
+          "defaultValue": 0.28,
+          "description": "Amount of isolated transient detail.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "cloud-vortex",
+      "name": "Cloud vortex",
+      "family": "turbulence",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:cloud-vortex",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Cloud scale",
+          "type": "unit",
+          "defaultValue": 0.5,
+          "description": "Size of the cloud layers.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "rotation",
+          "label": "Rotation",
+          "type": "unit",
+          "defaultValue": 0.32,
+          "description": "Speed of the vortex turn.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "density",
+          "label": "Density",
+          "type": "unit",
+          "defaultValue": 0.56,
+          "description": "Amount of cloud body.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "contrast",
+          "label": "Contrast",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Separation of cloud strata.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "eye",
+          "label": "Storm eye",
+          "type": "unit",
+          "defaultValue": 0.38,
+          "description": "Definition of the quiet centre.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "mycelium-network",
+      "name": "Mycelium network",
+      "family": "contour",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:mycelium-network",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Network scale",
+          "type": "unit",
+          "defaultValue": 0.54,
+          "description": "Spacing of the primary branches.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "growth",
+          "label": "Growth",
+          "type": "unit",
+          "defaultValue": 0.24,
+          "description": "Rate at which the field opens.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "branching",
+          "label": "Branching",
+          "type": "unit",
+          "defaultValue": 0.58,
+          "description": "Density of secondary strands.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "glow",
+          "label": "Glow",
+          "type": "unit",
+          "defaultValue": 0.5,
+          "description": "Brightness of the living edge.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "organic",
+          "label": "Organic",
+          "type": "unit",
+          "defaultValue": 0.66,
+          "description": "Irregularity of the network.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "ocean-swell",
+      "name": "Ocean swell",
+      "family": "water",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:ocean-swell",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Wave scale",
+          "type": "unit",
+          "defaultValue": 0.44,
+          "description": "Spacing of the primary swell.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "speed",
+          "label": "Wave speed",
+          "type": "unit",
+          "defaultValue": 0.28,
+          "description": "Travel speed of the wave fronts.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "swell",
+          "label": "Swell height",
+          "type": "unit",
+          "defaultValue": 0.62,
+          "description": "Strength of the rolling body.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "foam",
+          "label": "Foam detail",
+          "type": "unit",
+          "defaultValue": 0.38,
+          "description": "Amount of fine crest breakup.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "depth",
+          "label": "Ocean depth",
+          "type": "unit",
+          "defaultValue": 0.66,
+          "description": "Darkness and colour depth between crests.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "ink-bloom",
+      "name": "Ink bloom",
+      "family": "fluid",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:ink-bloom",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Bloom scale",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Size of the pigment clouds.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "flow",
+          "label": "Diffusion speed",
+          "type": "unit",
+          "defaultValue": 0.22,
+          "description": "Rate of ink dispersal.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "bloom",
+          "label": "Bloom body",
+          "type": "unit",
+          "defaultValue": 0.58,
+          "description": "Amount of dense pigment.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "diffusion",
+          "label": "Diffusion",
+          "type": "unit",
+          "defaultValue": 0.64,
+          "description": "Soft branching at bloom edges.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "pigment",
+          "label": "Pigment colour",
+          "type": "unit",
+          "defaultValue": 0.52,
+          "description": "Blue-to-magenta pigment balance.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "magnetic-field",
+      "name": "Magnetic field",
+      "family": "contour",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:magnetic-field",
+      "parameters": [
+        {
+          "id": "density",
+          "label": "Line density",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Number of magnetic field lines.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "motion",
+          "label": "Field motion",
+          "type": "unit",
+          "defaultValue": 0.18,
+          "description": "Slow precession of the poles.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "strength",
+          "label": "Field strength",
+          "type": "unit",
+          "defaultValue": 0.72,
+          "description": "Contrast and reach of each line.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "arcs",
+          "label": "Arc complexity",
+          "type": "unit",
+          "defaultValue": 0.44,
+          "description": "Secondary bends in the field.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "polarity",
+          "label": "Polarity colour",
+          "type": "unit",
+          "defaultValue": 0.5,
+          "description": "Colour separation between opposing poles.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "moire-interference",
+      "name": "Moiré interference",
+      "family": "geometric",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:moire-interference",
+      "parameters": [
+        {
+          "id": "frequency",
+          "label": "Line frequency",
+          "type": "unit",
+          "defaultValue": 0.52,
+          "description": "Density of the two line fields.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "rotation",
+          "label": "Field rotation",
+          "type": "unit",
+          "defaultValue": 0.2,
+          "description": "Relative rotation of the interference layers.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "contrast",
+          "label": "Contrast",
+          "type": "unit",
+          "defaultValue": 0.72,
+          "description": "Definition of the moiré bands.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "interference",
+          "label": "Interference",
+          "type": "unit",
+          "defaultValue": 0.58,
+          "description": "Separation between primary and secondary fields.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "phase",
+          "label": "Phase colour",
+          "type": "unit",
+          "defaultValue": 0.38,
+          "description": "Colour applied at opposing phases.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "low",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "bioluminescent-plankton",
+      "name": "Bioluminescent plankton",
+      "family": "particle",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:bioluminescent-plankton",
+      "parameters": [
+        {
+          "id": "density",
+          "label": "Organism density",
+          "type": "unit",
+          "defaultValue": 0.42,
+          "description": "Number of visible plankton points.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "drift",
+          "label": "Drift",
+          "type": "unit",
+          "defaultValue": 0.24,
+          "description": "Speed of the underwater current.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "glow",
+          "label": "Glow",
+          "type": "unit",
+          "defaultValue": 0.68,
+          "description": "Luminous body around each organism.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "pulse",
+          "label": "Pulse",
+          "type": "unit",
+          "defaultValue": 0.46,
+          "description": "Rhythm of individual flares.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "clusters",
+          "label": "Clustering",
+          "type": "unit",
+          "defaultValue": 0.58,
+          "description": "Amount of group behaviour.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "foam-bubbles",
+      "name": "Foam bubbles",
+      "family": "water",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:foam-bubbles",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Bubble scale",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Size of the bubbles.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "drift",
+          "label": "Foam drift",
+          "type": "unit",
+          "defaultValue": 0.2,
+          "description": "Speed of the foam bank.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "borders",
+          "label": "Bubble borders",
+          "type": "unit",
+          "defaultValue": 0.7,
+          "description": "Definition of bubble rims.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "fill",
+          "label": "Bubble fill",
+          "type": "unit",
+          "defaultValue": 0.24,
+          "description": "Brightness inside the bubbles.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "clumping",
+          "label": "Clumping",
+          "type": "unit",
+          "defaultValue": 0.56,
+          "description": "Density variation across the foam.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "frost-crystals",
+      "name": "Frost crystals",
+      "family": "geometric",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:frost-crystals",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Crystal scale",
+          "type": "unit",
+          "defaultValue": 0.46,
+          "description": "Size of the frost blooms.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "growth",
+          "label": "Growth",
+          "type": "unit",
+          "defaultValue": 0.18,
+          "description": "Rate at which frost spreads.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "facets",
+          "label": "Facets",
+          "type": "unit",
+          "defaultValue": 0.62,
+          "description": "Angular structure inside the ice.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "edgeGlow",
+          "label": "Edge glow",
+          "type": "unit",
+          "defaultValue": 0.58,
+          "description": "Brightness of crystal edges.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "coverage",
+          "label": "Frost coverage",
+          "type": "unit",
+          "defaultValue": 0.46,
+          "description": "Amount of surface overtaken by frost.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "woven-fibres",
+      "name": "Woven fibres",
+      "family": "contour",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:woven-fibres",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Weave scale",
+          "type": "unit",
+          "defaultValue": 0.54,
+          "description": "Density of the fabric threads.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "motion",
+          "label": "Thread drift",
+          "type": "unit",
+          "defaultValue": 0.12,
+          "description": "Subtle motion through the weave.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "contrast",
+          "label": "Thread contrast",
+          "type": "unit",
+          "defaultValue": 0.68,
+          "description": "Separation of fibres from the dark body.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "crossThreads",
+          "label": "Cross threads",
+          "type": "unit",
+          "defaultValue": 0.52,
+          "description": "Balance between warp and weft.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "fray",
+          "label": "Fray",
+          "type": "unit",
+          "defaultValue": 0.26,
+          "description": "Irregular broken fibres.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "topographic-erosion",
+      "name": "Topographic erosion",
+      "family": "contour",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:topographic-erosion",
+      "parameters": [
+        {
+          "id": "density",
+          "label": "Contour density",
+          "type": "unit",
+          "defaultValue": 0.56,
+          "description": "Number of terrain levels.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "drift",
+          "label": "Terrain drift",
+          "type": "unit",
+          "defaultValue": 0.14,
+          "description": "Slow movement of the landscape.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "lineContrast",
+          "label": "Line contrast",
+          "type": "unit",
+          "defaultValue": 0.72,
+          "description": "Definition of the contour lines.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "erosion",
+          "label": "Erosion",
+          "type": "unit",
+          "defaultValue": 0.52,
+          "description": "Breakup and pooling along the levels.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "relief",
+          "label": "Relief colour",
+          "type": "unit",
+          "defaultValue": 0.42,
+          "description": "Colour separation between elevations.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "cosmic-nebula",
+      "name": "Cosmic nebula",
+      "family": "planetary",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:cosmic-nebula",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Cloud scale",
+          "type": "unit",
+          "defaultValue": 0.46,
+          "description": "Size of the nebula structures.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "drift",
+          "label": "Cosmic drift",
+          "type": "unit",
+          "defaultValue": 0.16,
+          "description": "Movement through the gas field.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "density",
+          "label": "Gas density",
+          "type": "unit",
+          "defaultValue": 0.62,
+          "description": "Amount of luminous cloud.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "stars",
+          "label": "Stars",
+          "type": "unit",
+          "defaultValue": 0.24,
+          "description": "Density of bright stellar points.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "colour",
+          "label": "Nebula colour",
+          "type": "unit",
+          "defaultValue": 0.62,
+          "description": "Blue-to-magenta cosmic palette.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "holographic-scan",
+      "name": "Holographic scan",
+      "family": "matrix",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:holographic-scan",
+      "parameters": [
+        {
+          "id": "frequency",
+          "label": "Scan frequency",
+          "type": "unit",
+          "defaultValue": 0.58,
+          "description": "Density of the scan planes.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "speed",
+          "label": "Scan speed",
+          "type": "unit",
+          "defaultValue": 0.28,
+          "description": "Travel speed of the holographic scan.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "brightness",
+          "label": "Scan brightness",
+          "type": "unit",
+          "defaultValue": 0.68,
+          "description": "Luminance of the active lines.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "glitch",
+          "label": "Signal breakup",
+          "type": "unit",
+          "defaultValue": 0.26,
+          "description": "Amount of controlled digital tearing.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "spectrum",
+          "label": "Spectrum",
+          "type": "unit",
+          "defaultValue": 0.54,
+          "description": "Cyan-to-rainbow colour separation.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "coral-growth",
+      "name": "Coral growth",
+      "family": "fluid",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:coral-growth",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Colony scale",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Size of the coral colonies.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "growth",
+          "label": "Growth",
+          "type": "unit",
+          "defaultValue": 0.2,
+          "description": "Rate at which branches open.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "branching",
+          "label": "Branching",
+          "type": "unit",
+          "defaultValue": 0.58,
+          "description": "Density of secondary branches.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "glow",
+          "label": "Living glow",
+          "type": "unit",
+          "defaultValue": 0.54,
+          "description": "Luminance along new growth.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "density",
+          "label": "Reef density",
+          "type": "unit",
+          "defaultValue": 0.52,
+          "description": "Amount of connected coral body.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "space-tunnel",
+      "name": "Space tunnel",
+      "family": "planetary",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:space-tunnel",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Tunnel scale",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Spacing of the rushing tunnel rings.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "speed",
+          "label": "Flight speed",
+          "type": "unit",
+          "defaultValue": 0.34,
+          "description": "Rate at which the tunnel advances.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "depth",
+          "label": "Depth",
+          "type": "unit",
+          "defaultValue": 0.68,
+          "description": "Contrast between the tunnel mouth and outer field.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "streaks",
+          "label": "Star streaks",
+          "type": "unit",
+          "defaultValue": 0.42,
+          "description": "Density of small luminous streaks.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "colour",
+          "label": "Spectrum",
+          "type": "unit",
+          "defaultValue": 0.56,
+          "description": "Blue-to-magenta tunnel colour.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "kaleidoscopic-warp",
+      "name": "Kaleidoscopic warp",
+      "family": "geometric",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:kaleidoscopic-warp",
+      "parameters": [
+        {
+          "id": "symmetry",
+          "label": "Symmetry",
+          "type": "unit",
+          "defaultValue": 0.58,
+          "description": "Density of repeated mirrored folds.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "speed",
+          "label": "Fold speed",
+          "type": "unit",
+          "defaultValue": 0.26,
+          "description": "Rate at which the symmetry field evolves.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "sharpness",
+          "label": "Fold sharpness",
+          "type": "unit",
+          "defaultValue": 0.66,
+          "description": "Definition of the mirrored edges.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "warp",
+          "label": "Warp",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Distortion applied before the symmetry fold.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "spectrum",
+          "label": "Spectrum",
+          "type": "unit",
+          "defaultValue": 0.7,
+          "description": "Amount of spectral colour separation.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "fractal-circuits",
+      "name": "Fractal circuits",
+      "family": "matrix",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:fractal-circuits",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Circuit scale",
+          "type": "unit",
+          "defaultValue": 0.46,
+          "description": "Scale of the recursive circuit field.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "speed",
+          "label": "Circuit speed",
+          "type": "unit",
+          "defaultValue": 0.22,
+          "description": "Rate at which traces reorganise.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "lineWidth",
+          "label": "Line width",
+          "type": "unit",
+          "defaultValue": 0.34,
+          "description": "Width of the luminous circuit paths.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "recursion",
+          "label": "Recursion",
+          "type": "unit",
+          "defaultValue": 0.68,
+          "description": "Weight of deeper folded detail.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "glow",
+          "label": "Glow",
+          "type": "unit",
+          "defaultValue": 0.58,
+          "description": "Luminance around the circuit traces.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "high",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "black-hole-lensing",
+      "name": "Black-hole lensing",
+      "family": "planetary",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:black-hole-lensing",
+      "parameters": [
+        {
+          "id": "size",
+          "label": "Core size",
+          "type": "unit",
+          "defaultValue": 0.42,
+          "description": "Angular size of the dark core.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "speed",
+          "label": "Spin",
+          "type": "unit",
+          "defaultValue": 0.28,
+          "description": "Speed of the accretion flow.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "ringWidth",
+          "label": "Ring width",
+          "type": "unit",
+          "defaultValue": 0.34,
+          "description": "Thickness of the luminous lensing ring.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "distortion",
+          "label": "Lensing",
+          "type": "unit",
+          "defaultValue": 0.7,
+          "description": "Amount of warped structure around the core.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "colour",
+          "label": "Accretion colour",
+          "type": "unit",
+          "defaultValue": 0.54,
+          "description": "Warm-to-violet halo colour.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "concentric-rings",
+      "name": "Concentric rings",
+      "family": "geometric",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:concentric-rings",
+      "parameters": [
+        {
+          "id": "density",
+          "label": "Ring density",
+          "type": "unit",
+          "defaultValue": 0.5,
+          "description": "Number of hoops crossing the sphere.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "speed",
+          "label": "Ring speed",
+          "type": "unit",
+          "defaultValue": 0.18,
+          "description": "Rate at which the hoops travel.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "lineWidth",
+          "label": "Line width",
+          "type": "unit",
+          "defaultValue": 0.24,
+          "description": "Width of each diagnostic ring.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "crossing",
+          "label": "Crossing set",
+          "type": "unit",
+          "defaultValue": 0.58,
+          "description": "Strength of the second ring axis.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "glow",
+          "label": "Glow",
+          "type": "unit",
+          "defaultValue": 0.48,
+          "description": "Luminance around the hoop lines.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "low",
+      "safeLuminanceCeiling": 0.84
+    },
+    {
+      "id": "truchet-tiles",
+      "name": "Truchet tiles",
+      "family": "geometric",
+      "version": "1.0.0",
+      "nativeImplementation": "wgsl:truchet-tiles",
+      "parameters": [
+        {
+          "id": "scale",
+          "label": "Tile scale",
+          "type": "unit",
+          "defaultValue": 0.5,
+          "description": "Number of curved tiles across the surface.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "speed",
+          "label": "Tile drift",
+          "type": "unit",
+          "defaultValue": 0.16,
+          "description": "Rate at which the tile field moves.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "lineWidth",
+          "label": "Arc width",
+          "type": "unit",
+          "defaultValue": 0.26,
+          "description": "Width of the curved tile paths.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "twist",
+          "label": "Twist",
+          "type": "unit",
+          "defaultValue": 0.36,
+          "description": "Rotation and irregularity of each projection.",
+          "min": 0,
+          "max": 1
+        },
+        {
+          "id": "fill",
+          "label": "Tile fill",
+          "type": "unit",
+          "defaultValue": 0.3,
+          "description": "Subtle brightness inside alternating tiles.",
+          "min": 0,
+          "max": 1
+        }
+      ],
+      "gpuCost": "medium",
+      "safeLuminanceCeiling": 0.84
+    }
+  ],
+  "checksum": "fnv1a32:69f76247"
+}

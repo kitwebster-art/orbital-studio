@@ -16,7 +16,7 @@ describe("shader finishing controls", () => {
 
   it("clamps unsafe values and restores non-finite values", () => {
     expect(normaliseShaderLookControls({ motion: 99, scale: -4, hue: Number.NaN })).toMatchObject({
-      motion: 2.5,
+      motion: 4,
       scale: 0.35,
       hue: 0,
     });
@@ -26,6 +26,6 @@ describe("shader finishing controls", () => {
     expect(advanceShaderAnimationTime(4, 0.25, 1)).toBe(4.25);
     expect(advanceShaderAnimationTime(4, 0.25, 2.5)).toBe(4.625);
     expect(advanceShaderAnimationTime(4, 0.25, 0)).toBe(4);
-    expect(advanceShaderAnimationTime(4, 0.25, 99)).toBe(4.625);
+    expect(advanceShaderAnimationTime(4, 0.25, 99)).toBe(5);
   });
 });

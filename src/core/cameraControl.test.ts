@@ -16,7 +16,7 @@ describe("camera control contract", () => {
     expect(adapter.getState().physicalMeasurement).toBe(false);
 
     const discovered = adapter.discover();
-    expect(discovered.discoveredCount).toBe(5);
+    expect(discovered.discoveredCount).toBe(3);
     expect(discovered.state).toBe("discovered");
 
     const configured = adapter.configure(DEFAULT_CAMERA_PROFILE_ID);
@@ -30,7 +30,7 @@ describe("camera control contract", () => {
     const streaming = adapter.setStreaming(true);
     expect(streaming.state).toBe("streaming");
     const next = adapter.tick(0.25);
-    expect(next.activeCount).toBe(5);
+    expect(next.activeCount).toBe(3);
     expect(next.devices.every((device) => device.frameCount > 0)).toBe(true);
     expect(validateCameraRigState(next)).toEqual(next);
 

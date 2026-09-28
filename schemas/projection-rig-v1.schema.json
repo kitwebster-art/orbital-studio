@@ -62,6 +62,9 @@
         "positionM",
         "targetM",
         "colorHex",
+        "orientation",
+        "rotationDeg",
+        "raster",
         "fovDeg",
         "enabled",
         "brightness",
@@ -77,6 +80,17 @@
         "positionM": { "$ref": "#/$defs/point" },
         "targetM": { "$ref": "#/$defs/point" },
         "colorHex": { "type": "string", "pattern": "^#[0-9a-fA-F]{6}$" },
+        "orientation": { "const": "portrait" },
+        "rotationDeg": { "const": 90 },
+        "raster": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["widthPx", "heightPx"],
+          "properties": {
+            "widthPx": { "type": "integer", "exclusiveMinimum": 0 },
+            "heightPx": { "type": "integer", "exclusiveMinimum": 0 }
+          }
+        },
         "fovDeg": { "type": "number", "exclusiveMinimum": 1, "exclusiveMaximum": 170 },
         "enabled": { "type": "boolean" },
         "brightness": { "$ref": "#/$defs/unit" },

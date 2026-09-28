@@ -1,6 +1,6 @@
 export const CAMERA_RIG_SCHEMA_VERSION = "orbital.camera-rig/1.0" as const;
 export const CAMERA_COMMAND_SCHEMA_VERSION = "orbital.camera-command/1.0" as const;
-export const DEFAULT_CAMERA_COUNT = 5 as const;
+export const DEFAULT_CAMERA_COUNT = 3 as const;
 const NO_FRAME_AGE_MS = 999_999;
 
 export type CameraTransport = "genicam-gigevision" | "gmsl2" | "vendor-sdk" | "synthetic";
@@ -166,6 +166,36 @@ export interface CameraControlAdapter {
 
 export const CAMERA_PROFILES: readonly CameraProfile[] = Object.freeze([
   {
+    id: "huateng-ge134",
+    vendor: "HuaTeng Vision",
+    model: "HT-GE134GM-T1P-C",
+    transport: "vendor-sdk",
+    spectrum: "vis-nir",
+    resolutionPx: { width: 1024, height: 768 },
+    maxFps: 91,
+    pixelFormat: "mono8",
+    globalShutter: true,
+    hardwareTrigger: true,
+    lensMount: "C-mount",
+    recommendation: "primary",
+    note: "Connected Stage A camera. The Mac test profile uses a 1024x768 Mono8 ROI at 91 fps, 3 ms exposure and a native SDK bridge outside the browser.",
+  },
+  {
+    id: "contrastech-mars720s",
+    vendor: "Contrastech",
+    model: "MARS720S-300GM",
+    transport: "genicam-gigevision",
+    spectrum: "vis-nir",
+    resolutionPx: { width: 720, height: 540 },
+    maxFps: 300,
+    pixelFormat: "mono8",
+    globalShutter: true,
+    hardwareTrigger: true,
+    lensMount: "C-mount",
+    recommendation: "primary",
+    note: "Current Stage A target: Sony IMX287, GigE PoE, Mono8 at 100 or 120 fps. Vendor SDK remains outside the browser and is not connected yet.",
+  },
+  {
     id: "basler-ace2-nir",
     vendor: "Basler",
     model: "ace 2 a2A2048-114g5mBAS",
@@ -177,7 +207,7 @@ export const CAMERA_PROFILES: readonly CameraProfile[] = Object.freeze([
     globalShutter: true,
     hardwareTrigger: true,
     lensMount: "C-mount",
-    recommendation: "primary",
+    recommendation: "fallback",
     note: "NIR-enhanced Sony IMX900 class sensor, GigE Vision and pylon bridge target.",
   },
   {
@@ -212,7 +242,7 @@ export const CAMERA_PROFILES: readonly CameraProfile[] = Object.freeze([
   },
 ]);
 
-export const DEFAULT_CAMERA_PROFILE_ID = "basler-ace2-nir" as const;
+export const DEFAULT_CAMERA_PROFILE_ID = "huateng-ge134" as const;
 
 function profileById(profileId: string): CameraProfile {
   const profile = CAMERA_PROFILES.find((candidate) => candidate.id === profileId);
@@ -234,9 +264,9 @@ function createDevice(index: number, profile: CameraProfile): CameraDeviceState 
     fps: 0,
     latencyMs: 0,
     lastFrameAgeMs: NO_FRAME_AGE_MS,
-    exposureUs: 2_500,
+    exposureUs: profile.id === "huateng-ge134" ? 3_000 : 2_500,
     gainDb: 0,
-    triggerMode: "hardware",
+    triggerMode: profile.id === "huateng-ge134" ? "free-run" : "hardware",
     flags: ["VIRTUAL_DEVICE", "NO_HARDWARE_MEASUREMENT"],
   };
 }
@@ -259,14 +289,17 @@ function cloneState(state: CameraRigState): CameraRigState {
  * is explicitly virtual and can never reach a camera.
  */
 export class SyntheticCameraControlAdapter implements CameraControlAdapter {
-  readonly label = "Synthetic five-camera GenICam rig";
+  readonly label = "Synthetic three-camera GenICam rig";
   readonly available = true;
   readonly hardwareWriteEnabled = false as const;
 
   private state: CameraRigState;
   private fault: string | null = null;
 
-  constructor(cameraCount = DEFAULT_CAMERA_COUNT, profileId = DEFAULT_CAMERA_PROFILE_ID) {
+  constructor(
+    cameraCount: number = DEFAULT_CAMERA_COUNT,
+    profileId: string = DEFAULT_CAMERA_PROFILE_ID,
+  ) {
     if (!Number.isInteger(cameraCount) || cameraCount <= 0 || cameraCount > 16) {
       throw new Error("cameraCount must be an integer between 1 and 16");
     }

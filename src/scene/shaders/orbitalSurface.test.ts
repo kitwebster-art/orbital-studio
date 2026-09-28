@@ -56,4 +56,18 @@ describe("Orbital seamless surface shader", () => {
     expect(ORBITAL_SURFACE_VERTEX_SHADER).not.toContain("direction.y * 8.0");
     expect(ORBITAL_SURFACE_VERTEX_SHADER).not.toContain("direction.x + direction.z) * 13.0");
   });
+
+  it("supports real pre and post mapping projector raster renders", () => {
+    expect(ORBITAL_SURFACE_FRAGMENT_SHADER).toContain("uOutputPreviewMode");
+    expect(ORBITAL_SURFACE_FRAGMENT_SHADER).toContain("uOutputPreviewProjector");
+    expect(ORBITAL_SURFACE_FRAGMENT_SHADER).toContain("selectedOutputWeight");
+    expect(ORBITAL_SURFACE_FRAGMENT_SHADER).toContain("selectedOutputBlack");
+  });
+
+  it("keeps projector rasters vivid when the legacy score is in a dim state", () => {
+    expect(ORBITAL_SURFACE_FRAGMENT_SHADER).toContain("max(uBrightness, 0.82)");
+    expect(ORBITAL_SURFACE_FRAGMENT_SHADER).toContain("max(uEnergy, 0.70)");
+    expect(ORBITAL_SURFACE_FRAGMENT_SHADER).toContain("max(uPreviewExposure, 0.78)");
+    expect(ORBITAL_SURFACE_FRAGMENT_SHADER).toContain("luminance * 1.8");
+  });
 });
