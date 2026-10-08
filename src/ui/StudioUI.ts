@@ -64,9 +64,13 @@ import {
   DEFAULT_SHADER_LOOK_CONTROLS,
   SHADER_LOOK_CONTROL_DEFINITIONS,
   normaliseShaderLookControls,
+  projectionStartingLook,
   type ShaderLookControlId,
   type ShaderLookControls,
 } from "../core/shaderLookControls";
+import { readShaderShortlist, saveShaderShortlist, toggleShaderShortlist } from "../core/shaderShortlist";
+import { CREATIVE_RECIPES, type CreativeRecipe } from "../core/creativeRecipes";
+import type { ContentMotionSettings } from "../core/contentMotion";
 import {
   updateMovementCurve,
   updateMovementDuration,
@@ -271,6 +275,8 @@ const SHADER_ALGORITHM_PREVIEW_CLASSES = CURATED_SHADER_REGISTRY.shaders.map(
   (shader) => `shader-preview-${shader.id}`,
 );
 const SHADER_CATALOG_PAGE_SIZE = 72;
+const SHADER_CATALOG_IDS = new Set(SHADER_PRESET_CATALOG.map(card => card.id));
+const SHADER_SHORTLIST_IDS = new Set([...SHADER_CATALOG_IDS, ...CREATIVE_RECIPES.map(recipe => `recipe:${recipe.id}`)]);
 
 function formatCueDuration(seconds: number): string {
   const safe = Math.max(0, Number.isFinite(seconds) ? seconds : 0);
@@ -285,7 +291,7 @@ function formatShaderParameter(value: unknown): string {
 }
 
 function formatShaderLookControl(id: ShaderLookControlId, value: number): string {
-  return id === "motion" ? `${value.toFixed(2)}×` : value.toFixed(2);
+  return id === "exposure" ? `${value > 0 ? "+" : ""}${value.toFixed(2)} EV` : id === "brightness" || id === "saturation" ? `${Math.round(value * 100)}%` : id === "motion" ? `${value.toFixed(2)}×` : id === "shellGridWidth" ? value.toFixed(3) : value.toFixed(2);
 }
 
 function escapeHtml(value: string): string {
@@ -332,6 +338,13 @@ function writeProjectorWindowBody(output: Window, markup: string): void {
 
 /** Runs inside a projector window, so it needs nothing from the Studio page that opened it. */
 const PROJECTOR_WINDOW_FULLSCREEN_TOGGLE = "document.fullscreenElement?document.exitFullscreen():document.querySelector('.surface').requestFullscreen()";
+
+interface ProjectorOutputWindowSession {
+  canvas: HTMLCanvasElement;
+  owner: Window;
+  frameRequest: number;
+  disposed?: boolean;
+}
 
 export class StudioUI {
   readonly viewport: HTMLElement;
@@ -380,6 +393,10 @@ export class StudioUI {
     ...DEFAULT_PROJECTION_CALIBRATION_SETTINGS,
   };
   private selectedCatalogCardId = "geometric-grid-01";
+  private selectedCreativeRecipeName: string | null = null;
+  private selectedCreativeRecipeId: string | null = null;
+  private creativeRecipeMotionHandler: ((settings: ContentMotionSettings) => void) | null = null;
+  private favouriteShaderCardIds: string[] = [];
   private recentShaderCardIds: string[] = ["geometric-grid-01"];
   private activeRegionId = SURFACE_REGION_DEFINITIONS[0]?.id ?? "north-cap";
   private surfaceRegions = [...createDefaultSurfaceRegionAssignments()];
@@ -394,7 +411,7 @@ export class StudioUI {
   private shaderEventSoundControls: ShaderEventSoundControls = {
     ...DEFAULT_SHADER_EVENT_SOUND_CONTROLS,
   };
-  private previewExposure = 0.68;
+  private previewExposure = 1;
   private environmentControls: EnvironmentPreviewControls = {
     ...DEFAULT_ENVIRONMENT_PREVIEW_CONTROLS,
   };
@@ -405,7 +422,10 @@ export class StudioUI {
     ...DEFAULT_PROJECTION_MATERIAL_CONTROLS,
   };
   private shaderThumbnailRenderer: ((preset: ShaderPreset, canvas: HTMLCanvasElement) => void) | null = null;
-  private shaderThumbnailGeneration = 0;
+  private shaderThumbnailObserver: IntersectionObserver | null = null;
+  private readonly visibleShaderThumbnails = new Set<HTMLCanvasElement>();
+  private shaderThumbnailIdleRequest: number | null = null;
+  private shaderThumbnailTimer: number | null = null;
   private lastCoverageSignature = "";
   private lastProjectionCalibrationResult: ProjectionCalibrationResult | null = null;
   private calibrationStep = -1;
@@ -413,7 +433,7 @@ export class StudioUI {
   private outputResolution = { width: 1200, height: 1920, refreshHz: 60 };
   private readonly outputWindowSessions = new Map<
     MappingViewMode,
-    { canvas: HTMLCanvasElement; owner: Window; frameRequest: number }
+    ProjectorOutputWindowSession
   >();
   private projectorTestPattern: ProjectorTestPattern = "latency";
   private projectorTestOverlay = true;
@@ -449,6 +469,7 @@ export class StudioUI {
       }
     })();
     this.presetOverrides = readStudioPresetOverrides(this.presetStorage);
+    this.favouriteShaderCardIds = readShaderShortlist(this.presetStorage, SHADER_SHORTLIST_IDS);
     root.innerHTML = this.template();
     this.viewport = this.requireElement(root, "orbital-viewport");
     this.scrubber = this.requireInput(root, "show-scrubber");
@@ -651,6 +672,7 @@ export class StudioUI {
     this.updateParameters(snapshot.audiovisual);
     this.updateQuad(snapshot.quadLevels);
     this.updateProjectors(snapshot.projectorLevels);
+    this.updateProjectorPreviewLabels();
   }
 
   updateCameraRig(state: CameraRigState): void {
@@ -734,10 +756,29 @@ export class StudioUI {
           : "STANDBY · ONE-PROJECTOR MODE";
       }
       if (footer) {
-        footer.textContent = active
-          ? "portrait · post-mapping · active render"
-          : "portrait · output ready · currently inactive";
+        footer.dataset.previewDescription = active
+          ? "post-mapping · diagnostic preview"
+          : "output ready · currently inactive";
       }
+    });
+    this.updateProjectorPreviewLabels();
+  }
+
+  private updateProjectorPreviewLabels(): void {
+    document.querySelectorAll<HTMLElement>(".output-tile[data-output-view]").forEach(tile => {
+      const canvas = tile.querySelector<HTMLCanvasElement>("canvas[data-projector-output]");
+      const footer = tile.querySelector<HTMLElement>("small");
+      if (!canvas || !footer) return;
+      const label = canvas.dataset.previewPaused === "true"
+        ? canvas.dataset.previewState === "paused-output-priority"
+          ? "PREVIEW PAUSED · OUTPUT PRIORITY"
+          : "PREVIEW PAUSED · HIDDEN"
+        : canvas.dataset.previewState === "awaiting-frame"
+          ? "PREVIEW WAITING FOR FRAME"
+          : canvas.dataset.previewState === "blocked"
+            ? "PREVIEW BLOCKED · CHECK OUTPUT GATE"
+            : footer.dataset.previewDescription ?? "post-mapping · diagnostic preview";
+      if (footer.textContent !== label) footer.textContent = label;
     });
   }
 
@@ -777,9 +818,10 @@ export class StudioUI {
       }
       const label = tile?.querySelector<HTMLElement>("small");
       if (label) {
-        label.textContent = `portrait · ${projector.meanErrorPx.toFixed(2)} px · post-warp + blend`;
+        label.dataset.previewDescription = `${projector.meanErrorPx.toFixed(2)} px · post-warp + blend`;
       }
     });
+    this.updateProjectorPreviewLabels();
     this.refreshOpenOutputInspector();
     this.setAuthoringStatus(
       "Five simulated warp meshes and overlap masks built · connect cameras for a measured solve",
@@ -798,11 +840,7 @@ export class StudioUI {
     // the raster actually changes, so a position nudge or re-apply keeps a
     // projector window (and its fullscreen state) alive.
     const rasterChanged = this.outputResolution.width !== width || this.outputResolution.height !== height;
-    if (rasterChanged) {
-      for (const session of [...this.outputWindowSessions.values()]) session.owner.close();
-      this.outputWindowSessions.clear();
-      if (this.projectorTestWindowSession) { this.projectorTestWindowSession.owner.close(); this.projectorTestWindowSession = null; }
-    }
+    if (rasterChanged) this.closeProjectorWindows(false);
     this.outputResolution = { width, height, refreshHz: 60 };
     document.getElementById("studio-shell")!.dataset.testLayout = "true";
     const select = document.getElementById('output-resolution') as HTMLSelectElement;
@@ -826,10 +864,45 @@ export class StudioUI {
   /** True while at least one projector output or projector pattern window is open. */
   hasOpenOutputWindow(): boolean {
     for (const [view, session] of this.outputWindowSessions) {
-      if (session.owner.closed) this.outputWindowSessions.delete(view);
+      if (session.owner.closed) this.disposeProjectorWindow(view, session);
     }
     if (this.projectorTestWindowSession?.owner.closed) this.projectorTestWindowSession = null;
-    return this.outputWindowSessions.size > 0 || this.projectorTestWindowSession !== null;
+    const open = this.outputWindowSessions.size > 0 || this.projectorTestWindowSession !== null;
+    this.syncCloseProjectorWindowsButton(open);
+    return open;
+  }
+
+  closeProjectorWindows(announce = true): void {
+    for (const [view, session] of [...this.outputWindowSessions]) this.disposeProjectorWindow(view, session, true);
+    this.outputWindowSessions.clear();
+    const test = this.projectorTestWindowSession;
+    this.projectorTestWindowSession = null;
+    if (test) {
+      try { test.owner.cancelAnimationFrame(test.frameRequest); } catch { /* Window already detached. */ }
+      try { if (!test.owner.closed) test.owner.close(); } catch { /* Window already detached. */ }
+    }
+    this.syncCloseProjectorWindowsButton(false);
+    if (announce) {
+      this.setAuthoringStatus("Projector windows closed", false);
+      this.renderVisibleShaderThumbnails();
+    }
+  }
+
+  private disposeProjectorWindow(view: MappingViewMode, session: ProjectorOutputWindowSession, close = false): void {
+    if (session.disposed) return;
+    session.disposed = true;
+    try { session.owner.cancelAnimationFrame(session.frameRequest); } catch { /* Window already detached. */ }
+    this.callbacks.onDisposeProjectorOutput(session.canvas);
+    if (this.outputWindowSessions.get(view) === session) this.outputWindowSessions.delete(view);
+    if (close) {
+      try { if (!session.owner.closed) session.owner.close(); } catch { /* Window already detached. */ }
+    }
+    this.syncCloseProjectorWindowsButton();
+  }
+
+  private syncCloseProjectorWindowsButton(open = this.outputWindowSessions.size > 0 || this.projectorTestWindowSession !== null): void {
+    const button = document.getElementById("close-projector-windows") as HTMLButtonElement | null;
+    if (button && button.hidden === open) button.hidden = !open;
   }
 
   getActiveWorkspace(): string {
@@ -910,6 +983,7 @@ export class StudioUI {
     ctx.fillStyle = "#000";
     ctx.fillRect(0, 0, width, height);
     ctx.fillStyle = "#fff";
+    if(pattern.kind==='spot') {ctx.beginPath();ctx.arc(pattern.x,pattern.y,pattern.radius,0,Math.PI*2);ctx.fill();ctx.fillStyle='#000';ctx.beginPath();ctx.arc(pattern.x,pattern.y,pattern.radius*.65,0,Math.PI*2);ctx.fill();ctx.fillStyle='#fff';}
     for (const [start, end] of patternRuns(pattern, width, height)) {
       if (pattern.kind === "gray" && pattern.axis === "y") ctx.fillRect(0, start, width, end - start);
       else ctx.fillRect(start, 0, end - start, height);
@@ -1023,14 +1097,16 @@ export class StudioUI {
         card.id === this.selectedCatalogCardId &&
         card.preset.shaderId === shader.id,
     );
-    const selectedLook = selectedCard?.name ?? `${shader.name} / custom`;
+    const selectedLook = this.selectedCreativeRecipeName ?? selectedCard?.name ?? `${shader.name} / custom`;
     this.elements.activeShaderReadout.textContent = selectedCard
       ? `${selectedLook} · ${shader.family}`
       : `${selectedLook} · custom`;
+    const activeLook = document.getElementById("shader-active-look-name");
+    if (activeLook) activeLook.textContent = selectedLook;
     this.updateShaderOutputPreview(shader, resolvedPreset);
     if (selectedCard) {
       this.selectedCatalogCardId = selectedCard.id;
-      this.rememberShaderCard(selectedCard.id);
+      if (!this.selectedCreativeRecipeName) this.rememberShaderCard(selectedCard.id);
     }
     this.renderShaderCatalog();
     this.elements.shaderParameters.innerHTML = shader.parameterDefinitions
@@ -1088,6 +1164,29 @@ export class StudioUI {
     this.activateShaderCard(card);
   }
 
+  setCreativeRecipeMotionHandler(handler: (settings: ContentMotionSettings) => void): void {
+    this.creativeRecipeMotionHandler = handler;
+  }
+
+  selectCreativeRecipe(recipe: CreativeRecipe): void {
+    const card = SHADER_PRESET_CATALOG.find(candidate => candidate.id === `${recipe.preset.shaderId}-01`);
+    if (!card) return;
+    this.activateShaderCard(card, undefined, { ignoreSaved: true, recipe });
+    this.shaderLookControls = projectionStartingLook(recipe.look);
+    document.querySelectorAll<HTMLInputElement>("[data-shader-look-control]").forEach(input => {
+      const id = input.dataset.shaderLookControl as ShaderLookControlId;
+      input.value = String(this.shaderLookControls[id]);
+      const output = input.parentElement?.querySelector("output");
+      if (output) output.textContent = formatShaderLookControl(id, this.shaderLookControls[id]);
+    });
+    this.callbacks.onShaderLookControls(this.shaderLookControls);
+    const preset = createShaderPreset(recipe.preset.shaderId, { ...recipe.preset.parameters }, recipe.preset.seed);
+    this.setShaderDefinition(card.shader, preset);
+    this.callbacks.onShaderPreset(preset);
+    this.creativeRecipeMotionHandler?.(recipe.motion);
+    this.setAuthoringStatus(`${recipe.name} selected · ${recipe.description}`, false);
+  }
+
   restoreSelectedPreset(): void {
     const card = SHADER_PRESET_CATALOG.find(
       (candidate) => candidate.id === this.selectedCatalogCardId,
@@ -1107,7 +1206,7 @@ export class StudioUI {
         card.id === this.selectedCatalogCardId &&
         card.preset.shaderId === shader.id,
     );
-    const selectedLook = selectedCard?.name ?? `${shader.name} / custom`;
+    const selectedLook = this.selectedCreativeRecipeName ?? selectedCard?.name ?? `${shader.name} / custom`;
     const numericPreviewValues = shader.parameterDefinitions
       .map((parameter) => resolvedPreset.parameters[parameter.id])
       .filter((value): value is number => typeof value === "number" && Number.isFinite(value));
@@ -1320,11 +1419,22 @@ export class StudioUI {
         workspacePurposeTitle.textContent = purpose[0];
         workspacePurposeCopy.textContent = purpose[1];
       }
+      this.renderVisibleShaderThumbnails();
     };
     root.querySelectorAll<HTMLButtonElement>("[data-workspace-tab]").forEach((button) => {
       button.addEventListener("click", () => activateWorkspace(button.dataset.workspaceTab ?? "looks"));
     });
     activateWorkspace("looks");
+    document.addEventListener("visibilitychange", () => this.renderVisibleShaderThumbnails());
+    this.requireElement(root, "close-projector-windows").addEventListener("click", () => this.closeProjectorWindows());
+    window.addEventListener("beforeunload", () => {
+      // Leave named output windows on their physical display for the next
+      // Studio instance to reconnect. Explicit Close still closes them.
+      for (const [view, session] of [...this.outputWindowSessions]) this.disposeProjectorWindow(view, session, false);
+      const test=this.projectorTestWindowSession;
+      if(test) { try { test.owner.cancelAnimationFrame(test.frameRequest); if(!test.owner.closed) test.owner.close(); } catch { /* detached */ } }
+      this.projectorTestWindowSession=null;
+    }, { once: true });
     this.bindProjectorTest(root);
 
     const shell = this.requireElement(root, "studio-shell");
@@ -1830,10 +1940,12 @@ export class StudioUI {
             output.textContent = formatShaderLookControl(id, this.shaderLookControls[id]);
           }
           this.callbacks.onShaderLookControls(this.shaderLookControls);
+          this.savePresetFinishing();
         });
       });
+    this.requireElement(root, "save-shader-specific").addEventListener("click", () => this.updateSelectedPreset());
     this.elements.shaderLookReset.addEventListener("click", () => {
-      this.shaderLookControls = { ...DEFAULT_SHADER_LOOK_CONTROLS };
+      this.shaderLookControls = projectionStartingLook(DEFAULT_SHADER_LOOK_CONTROLS);
       root.querySelectorAll<HTMLInputElement>("[data-shader-look-control]")
         .forEach((input) => {
           const id = input.dataset.shaderLookControl as ShaderLookControlId;
@@ -1844,7 +1956,8 @@ export class StudioUI {
           }
         });
       this.callbacks.onShaderLookControls(this.shaderLookControls);
-      this.setAuthoringStatus("Finishing controls reset", false);
+      this.savePresetFinishing();
+      this.setAuthoringStatus("Finishing controls reset for this preset", false);
     });
     this.requireElement(root, "camera-discover").addEventListener("click", () => {
       this.callbacks.onCameraDiscover();
@@ -1955,6 +2068,21 @@ export class StudioUI {
         return;
       }
       this.restoreRecentShaderCard(card);
+    });
+    this.requireElement(root, "shader-shortlist-toggle").addEventListener("click", () => {
+      const id = this.selectedCreativeRecipeId ? `recipe:${this.selectedCreativeRecipeId}` : this.selectedCatalogCardId;
+      this.favouriteShaderCardIds = toggleShaderShortlist(this.favouriteShaderCardIds, id, SHADER_SHORTLIST_IDS);
+      const saved = saveShaderShortlist(this.presetStorage, this.favouriteShaderCardIds);
+      this.renderShaderShortlist();
+      this.setAuthoringStatus(saved ? "Favourite shortlist saved on this browser" : "Shortlist updated for this session; browser storage is unavailable", !saved);
+    });
+    this.requireElement(root, "shader-shortlist").addEventListener("click", (event) => {
+      const button = event.target instanceof HTMLElement ? event.target.closest<HTMLButtonElement>("[data-favourite-shader-id]") : null;
+      const id = button?.dataset.favouriteShaderId;
+      const recipe = id?.startsWith("recipe:") ? CREATIVE_RECIPES.find(candidate => `recipe:${candidate.id}` === id) : undefined;
+      if (recipe) { this.selectCreativeRecipe(recipe); return; }
+      const card = id ? SHADER_PRESET_CATALOG.find(candidate => candidate.id === id) : undefined;
+      if (card) this.activateShaderCard(card, `${card.name} selected from favourites`);
     });
     this.elements.shaderCatalogMore.addEventListener("click", () => {
       const filtered = this.filteredShaderCards();
@@ -2405,12 +2533,48 @@ export class StudioUI {
     this.renderRecentShaderCards();
   }
 
-  private activateShaderCard(card: ShaderPresetCard, status?: string): void {
+  private savePresetFinishing(): void {
+    if (this.selectedCreativeRecipeId) {
+      this.setAuthoringStatus("Recipe controls applied · Save shader-specific settings explicitly to update its catalogue preset", false);
+      return;
+    }
+    try {
+      if (!this.presetStorage) throw new Error('Storage unavailable');
+      this.presetStorage.setItem(`orbital.finishing/1.0/${this.selectedCatalogCardId}`, JSON.stringify(this.shaderLookControls));
+      this.setAuthoringStatus('Projection controls saved for this preset', false);
+    } catch { this.setAuthoringStatus('Controls applied, but browser storage is unavailable', true); }
+  }
+
+  private activateShaderCard(card: ShaderPresetCard, status?: string, options: { ignoreSaved?: boolean; recipe?: CreativeRecipe } = {}): void {
     this.selectedCatalogCardId = card.id;
-    const saved = this.presetOverrides[card.id];
+    this.selectedCreativeRecipeName = options.recipe?.name ?? null;
+    this.selectedCreativeRecipeId = options.recipe?.id ?? null;
+    const saved = options.ignoreSaved ? undefined : this.presetOverrides[card.id];
     if (saved) {
       this.applySavedSharedControls(saved);
     }
+    let finishing = saved?.lookControls ?? DEFAULT_SHADER_LOOK_CONTROLS;
+    try {
+      const raw = options.ignoreSaved ? null : this.presetStorage?.getItem(`orbital.finishing/1.0/${card.id}`);
+      if (raw) finishing = normaliseShaderLookControls(JSON.parse(raw));
+    } catch { /* use validated legacy/default settings */ }
+    this.shaderLookControls = projectionStartingLook(finishing);
+    this.previewExposure = 1;
+    const previewLight = document.getElementById('shader-preview-exposure') as HTMLInputElement | null;
+    if (previewLight) previewLight.value = '1';
+    const previewReadout = document.getElementById('shader-preview-exposure-value');
+    if (previewReadout) previewReadout.textContent = '100%';
+    this.callbacks.onShaderPreviewExposure(1);
+    document.querySelectorAll<HTMLInputElement>('[data-shader-look-control]').forEach(input => {
+      const id = input.dataset.shaderLookControl as ShaderLookControlId;
+      input.value = String(this.shaderLookControls[id]);
+      const output = input.parentElement?.querySelector('output');
+      if (output) output.textContent = formatShaderLookControl(id, this.shaderLookControls[id]);
+    });
+    this.callbacks.onShaderLookControls(this.shaderLookControls);
+    document.querySelectorAll<HTMLElement>('[data-interior-grid-control]').forEach(el => {
+      el.hidden = !['interior-orbits', 'interior-crystal', 'interior-tidal', 'back-hemisphere-mesh'].includes(card.shader.id);
+    });
     const preset = saved?.preset ?? card.preset;
     this.setShaderDefinition(card.shader, preset);
     this.callbacks.onShaderPreset(preset);
@@ -2697,6 +2861,27 @@ export class StudioUI {
     this.renderVisibleShaderThumbnails();
   }
 
+  private renderShaderShortlist(): void {
+    const container = document.getElementById("shader-shortlist");
+    const toggle = document.getElementById("shader-shortlist-toggle") as HTMLButtonElement | null;
+    const count = document.getElementById("shader-shortlist-count");
+    if (!container || !toggle || !count) return;
+    const activeId = this.selectedCreativeRecipeId ? `recipe:${this.selectedCreativeRecipeId}` : this.selectedCatalogCardId;
+    const saved = this.favouriteShaderCardIds.includes(activeId);
+    toggle.textContent = saved ? "Remove selected favourite" : "Favourite selected look";
+    toggle.setAttribute("aria-pressed", String(saved));
+    count.textContent = `${this.favouriteShaderCardIds.length} saved`;
+    container.innerHTML = this.favouriteShaderCardIds.length === 0
+      ? '<p class="shader-shortlist-empty">Keep successful looks here for quick recall. Saved on this browser.</p>'
+      : this.favouriteShaderCardIds.map(id => {
+        const recipe = id.startsWith("recipe:") ? CREATIVE_RECIPES.find(candidate => `recipe:${candidate.id}` === id) : undefined;
+        const card = SHADER_PRESET_CATALOG.find(candidate => candidate.id === id);
+        const name = recipe?.name ?? card?.name;
+        if (!name) return "";
+        return `<button type="button" data-favourite-shader-id="${id}" aria-label="Select favourite ${escapeHtml(name)}" aria-pressed="${id === activeId}"><strong>${escapeHtml(name)}</strong><small>${recipe ? "composition" : `${card!.shader.family} · variant ${card!.variant.toString().padStart(2, "0")}`}</small></button>`;
+      }).join("");
+  }
+
   private syncShaderQuickFilters(root: HTMLElement): void {
     root.querySelectorAll<HTMLButtonElement>("[data-shader-quick]").forEach((button) => {
       const value = button.dataset.shaderQuick ?? "all";
@@ -2714,14 +2899,9 @@ export class StudioUI {
   private renderShaderCatalog(): void {
     const filtered = this.filteredShaderCards();
     let visible = filtered.slice(0, this.shaderCatalogLimit);
-    let selectedCard = filtered.find((card) => card.id === this.selectedCatalogCardId);
-    if (!selectedCard && filtered.length > 0) {
-      selectedCard = filtered[0];
-      this.selectedShaderId = selectedCard.shader.id;
-      this.activateShaderCard(selectedCard);
-      return;
-    }
-    if (selectedCard && !visible.some((card) => card.id === selectedCard.id)) {
+    const selectedCard = SHADER_PRESET_CATALOG.find(card => card.id === this.selectedCatalogCardId);
+    const selectedInFilter = !this.selectedCreativeRecipeId && filtered.some(card => card.id === this.selectedCatalogCardId);
+    if (selectedCard && selectedInFilter && !visible.some((card) => card.id === selectedCard.id)) {
       visible = [
         selectedCard,
         ...visible.slice(0, Math.max(0, this.shaderCatalogLimit - 1)),
@@ -2742,7 +2922,7 @@ export class StudioUI {
         ? "Assign the selected preset to the active region"
         : "Choose a visible preset before assigning it to the active region";
     }
-    this.elements.shaderCatalogCount.textContent = `${filtered.length} presets · showing ${visible.length}`;
+    this.elements.shaderCatalogCount.textContent = `${filtered.length} presets · showing ${visible.length}${this.selectedCreativeRecipeId ? " · composition active" : selectedInFilter ? "" : " · active look outside filter"}`;
     const remaining = Math.max(0, filtered.length - visible.length);
     const moreButton = this.elements.shaderCatalogMore as HTMLButtonElement;
     moreButton.hidden = remaining === 0;
@@ -2755,11 +2935,11 @@ export class StudioUI {
       );
     }
     this.elements.shaderCatalog.innerHTML = visible.length === 0
-      ? `<p class="shader-catalog-empty" role="status">No presets match. Try grid, water, fire or matrix.</p>`
+      ? `<p class="shader-catalog-empty" role="status">No presets match. Your active look continues. Try grid, water, fire or matrix.</p>`
       : visible
         .map(
           (card) => `
-          <button type="button" class="shader-card${card.id === this.selectedCatalogCardId ? " is-selected" : ""}" data-shader-card-id="${card.id}" aria-label="${card.name}, ${card.shader.family} shader" aria-pressed="${card.id === this.selectedCatalogCardId}">
+          <button type="button" class="shader-card${!this.selectedCreativeRecipeId && card.id === this.selectedCatalogCardId ? " is-selected" : ""}" data-shader-card-id="${card.id}" aria-label="${card.name}, ${card.shader.family} shader" aria-pressed="${!this.selectedCreativeRecipeId && card.id === this.selectedCatalogCardId}">
             <canvas class="shader-card-preview shader-preview-${card.shader.family} shader-preview-${card.shader.id}" data-shader-thumbnail="${card.id}" width="180" height="120" style="--shader-seed:${card.preset.seed % 97}" aria-label="${escapeHtml(card.name)} rendered on the balloon"></canvas>
             <span class="shader-card-name">${card.name}</span>
             <span class="shader-card-meta">${card.shader.family} · ${card.shader.gpuCost}</span>
@@ -2767,28 +2947,68 @@ export class StudioUI {
         )
         .join("");
     this.renderShaderVariantNavigator();
+    this.renderShaderShortlist();
     this.renderVisibleShaderThumbnails();
   }
 
   private renderVisibleShaderThumbnails(): void {
-    if (!this.shaderThumbnailRenderer) return;
-    const generation = ++this.shaderThumbnailGeneration;
+    this.shaderThumbnailObserver?.disconnect();
+    this.visibleShaderThumbnails.clear();
+    if (this.shaderThumbnailIdleRequest !== null) window.cancelIdleCallback(this.shaderThumbnailIdleRequest);
+    if (this.shaderThumbnailTimer !== null) window.clearTimeout(this.shaderThumbnailTimer);
+    this.shaderThumbnailIdleRequest = null;
+    this.shaderThumbnailTimer = null;
+    if (!this.shaderThumbnailRenderer || this.getActiveWorkspace() !== "looks" || document.visibilityState !== "visible") return;
     const canvases = Array.from(
       document.querySelectorAll<HTMLCanvasElement>("canvas[data-shader-thumbnail]:not([data-rendered='true'])"),
     );
-    let index = 0;
-    const renderBatch = () => {
-      if (generation !== this.shaderThumbnailGeneration || !this.shaderThumbnailRenderer) return;
-      for (let count = 0; count < 6 && index < canvases.length; count += 1, index += 1) {
-        const canvas = canvases[index];
-        const card = SHADER_PRESET_CATALOG.find(
-          (candidate) => candidate.id === canvas.dataset.shaderThumbnail,
-        );
-        if (card && canvas.isConnected) this.shaderThumbnailRenderer(card.preset, canvas);
+    if (!this.shaderThumbnailObserver) {
+      this.shaderThumbnailObserver = new IntersectionObserver(entries => {
+        for (const entry of entries) {
+          const canvas = entry.target as HTMLCanvasElement;
+          if (entry.isIntersecting && canvas.isConnected && canvas.dataset.rendered !== "true") this.visibleShaderThumbnails.add(canvas);
+          else this.visibleShaderThumbnails.delete(canvas);
+        }
+        this.scheduleShaderThumbnail();
+      });
+    }
+    canvases.forEach(canvas => this.shaderThumbnailObserver!.observe(canvas));
+  }
+
+  private scheduleShaderThumbnail(): void {
+    if (this.shaderThumbnailIdleRequest !== null || this.shaderThumbnailTimer !== null || this.visibleShaderThumbnails.size === 0) return;
+    if (this.getActiveWorkspace() !== "looks" || document.visibilityState !== "visible") return;
+    if (this.hasOpenOutputWindow()) {
+      // Projector frames take priority; resume thumbnail work after the output closes.
+      this.shaderThumbnailTimer = window.setTimeout(() => {
+        this.shaderThumbnailTimer = null;
+        this.scheduleShaderThumbnail();
+      }, 1_000);
+      return;
+    }
+    const renderOne = (deadline?: IdleDeadline): void => {
+      this.shaderThumbnailIdleRequest = null;
+      this.shaderThumbnailTimer = null;
+      if (this.getActiveWorkspace() !== "looks" || document.visibilityState !== "visible" || !this.shaderThumbnailRenderer) return;
+      if (this.hasOpenOutputWindow() || (deadline && !deadline.didTimeout && deadline.timeRemaining() < 5)) {
+        this.scheduleShaderThumbnail();
+        return;
       }
-      if (index < canvases.length) window.setTimeout(renderBatch, 16);
+      const canvas = this.visibleShaderThumbnails.values().next().value as HTMLCanvasElement | undefined;
+      if (!canvas) return;
+      this.visibleShaderThumbnails.delete(canvas);
+      const card = SHADER_PRESET_CATALOG.find(candidate => candidate.id === canvas.dataset.shaderThumbnail);
+      if (card && canvas.isConnected && canvas.getClientRects().length > 0) {
+        this.shaderThumbnailRenderer(card.preset, canvas);
+        this.shaderThumbnailObserver?.unobserve(canvas);
+      }
+      this.scheduleShaderThumbnail();
     };
-    renderBatch();
+    if (typeof window.requestIdleCallback === "function") {
+      this.shaderThumbnailIdleRequest = window.requestIdleCallback(renderOne, { timeout: 1_000 });
+    } else {
+      this.shaderThumbnailTimer = window.setTimeout(() => renderOne(), 80);
+    }
   }
 
   private renderShaderVariantNavigator(): void {
@@ -2814,10 +3034,10 @@ export class StudioUI {
     const variants = SHADER_PRESET_CATALOG.filter(
       (card) => card.preset.shaderId === selected.preset.shaderId,
     );
-    readout.textContent = `VARIANT ${selected.variant.toString().padStart(2, "0")} / ${variants.length}`;
+    readout.textContent = this.selectedCreativeRecipeName ? "AUTHORED COMPOSITION" : `VARIANT ${selected.variant.toString().padStart(2, "0")} / ${variants.length}`;
     readout.setAttribute(
       "aria-label",
-      `${selected.name}, variant ${selected.variant} of ${variants.length}`,
+      this.selectedCreativeRecipeName ?? `${selected.name}, variant ${selected.variant} of ${variants.length}`,
     );
     previous.disabled = variants.length < 2;
     next.disabled = variants.length < 2;
@@ -3213,10 +3433,12 @@ export class StudioUI {
       if (this.projectorTestWindowSession?.owner === output) {
         this.projectorTestWindowSession = null;
       }
+      this.syncCloseProjectorWindowsButton();
     }, { once: true });
     syncControls();
     frameRequest = output.requestAnimationFrame(render);
     this.projectorTestWindowSession = { owner: output, frameRequest };
+    this.syncCloseProjectorWindowsButton();
     this.requireElement(root, "projector-test-status").textContent =
       `OPEN · ${width}×${height} · requested ${requestedRefreshHz} Hz · projector confirmation required`;
     this.setAuthoringStatus("Projector test output opened", false);
@@ -3370,11 +3592,7 @@ export class StudioUI {
     // window with this name is reused in place (27 September, the window "never opened").
     try { output.focus(); } catch { /* focus is best effort */ }
     const previousSession = this.outputWindowSessions.get(view);
-    if (previousSession) {
-      previousSession.owner.cancelAnimationFrame(previousSession.frameRequest);
-      this.callbacks.onDisposeProjectorOutput(previousSession.canvas);
-      this.outputWindowSessions.delete(view);
-    }
+    if (previousSession) this.disposeProjectorWindow(view, previousSession);
     const label = mappingViewLabel(view);
     const outputGrid = document.getElementById("output-grid");
     const sourceCanvas = view.startsWith("projector-")
@@ -3461,13 +3679,14 @@ export class StudioUI {
     // The render clock belongs to the projector window: its own
     // requestAnimationFrame runs at the projector's refresh while the control
     // page is throttled behind a fullscreen window.
-    const session = { canvas: windowCanvas!, owner: output, frameRequest: 0 };
+    const session: ProjectorOutputWindowSession = { canvas: windowCanvas!, owner: output, frameRequest: 0 };
     const loop = () => {
-      if (output.closed) return;
+      if (output.closed || session.disposed) return;
       session.frameRequest = output.requestAnimationFrame(loop);
       syncWindow();
     };
     if (windowCanvas) this.outputWindowSessions.set(view, session);
+    this.syncCloseProjectorWindowsButton();
     syncWindow();
     session.frameRequest = output.requestAnimationFrame(loop);
     output.document.querySelector<HTMLButtonElement>("[data-freeze]")?.addEventListener("click", (event) => {
@@ -3499,14 +3718,8 @@ export class StudioUI {
     output.document.body.setAttribute("onmessage", "if(event.data==='orbital-projector-fullscreen'&&!document.fullscreenElement){document.querySelector('.surface').requestFullscreen().catch(function(){});}");
     void this.placeOnProjectorScreen(output).then(() => { if (this.fullscreenOnOpen) this.requestProjectorFullscreen(); });
     output.addEventListener("beforeunload", () => {
-      output.cancelAnimationFrame(session.frameRequest);
       output.document.removeEventListener("fullscreenchange", syncWindow);
-      if (windowCanvas) {
-        this.callbacks.onDisposeProjectorOutput(windowCanvas);
-        if (this.outputWindowSessions.get(view)?.canvas === windowCanvas) {
-          this.outputWindowSessions.delete(view);
-        }
-      }
+      this.disposeProjectorWindow(view, session);
     }, { once: true });
     output.focus();
     this.setAuthoringStatus(
@@ -3817,6 +4030,7 @@ export class StudioUI {
             <button id="audiovisual-show-button" class="transport-show" type="button">Play audiovisual show</button>
             <button id="play-button" class="transport-primary" type="button">Run motion test</button>
             <button id="reset-button" type="button">Stop</button>
+            <button id="close-projector-windows" type="button" hidden>Close projector windows</button>
             <select id="rate-select" aria-label="Playback rate">
               <option value="1">1×</option>
               <option value="6">6×</option>
@@ -3868,7 +4082,7 @@ export class StudioUI {
                 ${[1, 2, 3, 4, 5].map((index) => {
                   const actionLabel = `Inspect projector ${index} output`;
                   const actionText = "Inspect";
-                  return `<article class="output-tile" data-output-view="projector-${index}"><div class="output-tile-heading"><span>P${index} · 90°</span><div><button type="button" data-output-mode-index="${index - 1}" aria-label="Projector ${index} output mode: post-mapping. Click to switch.">POST</button><button type="button" data-inspect-view="projector-${index}" aria-label="${actionLabel}">${actionText}</button><button type="button" data-open-output-window="projector-${index}" aria-label="Open projector ${index} output window">OPEN</button></div></div><div class="output-tile-preview" role="img" aria-label="Live P${index} portrait projector raster"><canvas data-projector-output="${index - 1}" data-output-mode="post" width="300" height="480"></canvas></div><b data-coverage-badge>ANALYSING</b><small>portrait · post-mapping · live render</small></article>`;
+                  return `<article class="output-tile" data-output-view="projector-${index}"><div class="output-tile-heading"><span>P${index} · 90°</span><div><button type="button" data-output-mode-index="${index - 1}" aria-label="Projector ${index} output mode: post-mapping. Click to switch.">POST</button><button type="button" data-inspect-view="projector-${index}" aria-label="${actionLabel}">${actionText}</button><button type="button" data-open-output-window="projector-${index}" aria-label="Open projector ${index} output window">OPEN</button></div></div><div class="output-tile-preview" role="img" aria-label="P${index} projector raster preview"><canvas data-projector-output="${index - 1}" data-output-mode="post" width="300" height="480"></canvas></div><b data-coverage-badge>ANALYSING</b><small data-preview-description="post-mapping · diagnostic preview">post-mapping · diagnostic preview</small></article>`;
                 }).join("")}
               </div>
               <div class="mapping-lab-note">P1–P5 move the main viewport to each projector camera. After calibration, every tile shows its loaded post-warp shape and per-edge blend mask. SIMULATED means rehearsal data, MEASURED means camera-derived data.</div>
@@ -3917,28 +4131,36 @@ export class StudioUI {
               <strong id="workspace-purpose-title">SET UP THE OUTPUTS</strong>
               <p id="workspace-purpose-copy"></p>
             </section>
-            <section class="control-section show-controls" data-workspace-panel="looks" aria-label="Simple audiovisual show controls">
-              <div class="show-controls-heading">
-                <div><span>SHOW CONTROLS</span><strong>Make the sphere perform</strong></div>
-                <output id="looks-mode-readout">SIMPLE · CREATE A LOOK</output>
-              </div>
-              <button id="quick-audiovisual-show" class="show-controls-play" type="button">Play full audiovisual show</button>
-              <div class="show-controls-grid">
-                <label><span>Tempo <output id="quick-show-bpm-value">${DEFAULT_LIVING_SKIN_CONTROLS.bpm}</output></span><input id="quick-show-bpm" type="range" min="54" max="180" step="1" value="${DEFAULT_LIVING_SKIN_CONTROLS.bpm}"></label>
-                <label><span>Shader chopping <output id="quick-show-fragment-value">${Math.round(((DEFAULT_LIVING_SKIN_CONTROLS.variety + DEFAULT_LIVING_SKIN_CONTROLS.glitch + DEFAULT_LIVING_SKIN_CONTROLS.flashRate) / 3) * 100)}%</output></span><input id="quick-show-fragment" type="range" min="0" max="100" step="1" value="72"></label>
-                <label><span>Rhythm scatter <output id="quick-show-rhythm-value">${Math.round(DEFAULT_LIVING_SKIN_CONTROLS.eventHold * 100)}%</output></span><input id="quick-show-rhythm" type="range" min="0" max="100" step="1" value="${Math.round(DEFAULT_LIVING_SKIN_CONTROLS.eventHold * 100)}"></label>
-                <label><span>Phrase evolution <output id="quick-show-phrase-value">${Math.round(DEFAULT_LIVING_SKIN_CONTROLS.phraseEvolution * 100)}%</output></span><input id="quick-show-phrase" type="range" min="0" max="100" step="1" value="${Math.round(DEFAULT_LIVING_SKIN_CONTROLS.phraseEvolution * 100)}"></label>
-                <label><span>Sound level <output id="quick-show-sound-value">${Math.round(DEFAULT_SHADER_EVENT_SOUND_CONTROLS.level * 100)}%</output></span><input id="quick-show-sound" type="range" min="0" max="100" step="1" value="${Math.round(DEFAULT_SHADER_EVENT_SOUND_CONTROLS.level * 100)}"></label>
-                <label class="quick-sound-switch"><span>Beat sound</span><input id="quick-show-sound-enabled" type="checkbox"></label>
-              </div>
-              <div class="show-controls-help"><span>1. Choose a shader below</span><span>2. Set the rhythm</span><span>3. Press play</span></div>
-              <button id="looks-expert-toggle" class="looks-expert-toggle" type="button" aria-expanded="false">Show expert controls</button>
-            </section>
             <section class="control-section shader-section" data-workspace-panel="looks">
               <div class="section-heading">
                 <span>SHADER TEST BENCH</span>
                 <small>click a look to put it on the sphere</small>
               </div>
+              <section class="shader-active-look" aria-label="Active look and favourite shortlist">
+                <div class="shader-active-look-heading"><div><span>ACTIVE LOOK</span><strong id="shader-active-look-name">Geometric grid / 01</strong></div><button id="shader-shortlist-toggle" type="button" aria-pressed="false">Favourite selected look</button></div>
+                <div class="shader-shortlist-heading"><span>FAVOURITES</span><small id="shader-shortlist-count">0 saved</small></div>
+                <div id="shader-shortlist" class="shader-shortlist" role="group" aria-label="Saved favourite looks"></div>
+              </section>
+              ${SHADER_LOOK_CONTROL_DEFINITIONS.filter((control) => control.id === "motion").map((control) => `
+                <label class="shader-preview-exposure shader-animation-speed" title="${control.description}">
+                  <span>${control.label} <output>${formatShaderLookControl(control.id, control.defaultValue)}</output></span>
+                  <input type="range" min="${control.min}" max="${control.max}" step="${control.step}" value="${control.defaultValue}" data-shader-look-control="${control.id}" aria-label="${control.label}">
+                </label>
+              `).join("")}
+              <details class="shader-look-panel"><summary>Shader-specific controls</summary><div id="shader-parameters" class="shader-parameter-list"></div><button id="save-shader-specific" class="wide-button" type="button">Save shader-specific settings</button></details>
+              <details class="shader-look-panel" open>
+                <summary><span>PROJECTION COLOUR &amp; SHELL</span><small>100% native brightness</small></summary>
+                <div id="shader-look-controls" class="shader-parameter-list shader-look-controls">
+                  ${[...SHADER_LOOK_CONTROL_DEFINITIONS].filter((control) => control.id !== "motion").sort((a, b) => (["exposure", "brightness", "contrast", "saturation"].includes(a.id) ? ["exposure", "brightness", "contrast", "saturation"].indexOf(a.id) : 10) - (["exposure", "brightness", "contrast", "saturation"].includes(b.id) ? ["exposure", "brightness", "contrast", "saturation"].indexOf(b.id) : 10)).map((control) => `
+                    <label class="shader-parameter" ${control.id.startsWith("shellGrid") ? 'data-interior-grid-control hidden' : ''} title="${control.description}">
+                      <span>${control.label}</span><output>${formatShaderLookControl(control.id, control.defaultValue)}</output>
+                      <input type="range" min="${control.min}" max="${control.max}" step="${control.step}" value="${control.defaultValue}" data-shader-look-control="${control.id}" aria-label="${control.label}">
+                    </label>
+                  `).join("")}
+                </div>
+                <button id="reset-shader-look-controls" class="wide-button shader-look-reset" type="button">Reset this preset’s projection controls</button>
+              </details>
+              <small class="control-note">Bright colours are authored in the shaders. Presets start at 100% native brightness, full original colour and neutral exposure (0 EV). Raising exposure is optional. Selecting a preset restores these starting levels. Outer grid controls appear on interior looks and stay attached to the balloon.</small>
               <div class="shader-library-toolbar">
                 <input id="shader-search" type="search" placeholder="Try ocean, ink, grid, fire, nebula..." aria-label="Search shader presets">
                 <select id="shader-family-filter" aria-label="Filter shader family">
@@ -3963,15 +4185,9 @@ export class StudioUI {
                 <button type="button" data-shader-quick="turbulence" data-active="false" aria-pressed="false">Turbulence</button>
               </div>
               <label class="shader-preview-exposure">
-                <span>Preview light <output id="shader-preview-exposure-value">68%</output></span>
-                <input id="shader-preview-exposure" type="range" min="0" max="1" step="0.01" value="0.68" aria-label="Shader preview light">
+                <span>Preview light <output id="shader-preview-exposure-value">100%</output></span>
+                <input id="shader-preview-exposure" type="range" min="0" max="1" step="0.01" value="1" aria-label="Shader preview light">
               </label>
-              ${SHADER_LOOK_CONTROL_DEFINITIONS.filter((control) => control.id === "motion").map((control) => `
-                <label class="shader-preview-exposure shader-animation-speed" title="${control.description}">
-                  <span>${control.label} <output>${formatShaderLookControl(control.id, control.defaultValue)}</output></span>
-                  <input type="range" min="${control.min}" max="${control.max}" step="${control.step}" value="${control.defaultValue}" data-shader-look-control="${control.id}" aria-label="${control.label}">
-                </label>
-              `).join("")}
               <section class="scene-preview-controls expert-only" aria-label="Scene and fan lift preview controls">
                 <div class="section-heading">
                   <span>SCENE &amp; LIFT</span>
@@ -4020,7 +4236,7 @@ export class StudioUI {
                 </div>
               </details>
               <details class="material-lab expert-only">
-                <summary><span>PROJECTION MATERIAL</span><small>contrast and internal wash</small></summary>
+                <summary><span>PROJECTION MATERIAL</span><small>optional preview response</small></summary>
                 <label class="editor-field"><span>Material profile</span><select id="balloon-material-profile">${BALLOON_MATERIAL_PROFILE_IDS.map((id) => `<option value="${id}"${id === "latex" ? " selected" : ""}>${id.replace("-", " ")}</option>`).join("")}</select></label>
                 <div class="material-control-grid">
                   ${[
@@ -4030,7 +4246,7 @@ export class StudioUI {
                     ["roughness", "Surface roughness", DEFAULT_PROJECTION_MATERIAL_CONTROLS.roughness],
                   ].map(([id, label, value]) => `<label class="material-slider"><span>${label}<output>${Number(value).toFixed(2)}</output></span><input type="range" min="0" max="1" step="0.01" value="${value}" data-material-control="${id}"></label>`).join("")}
                 </div>
-                <small class="control-note">A visual comparison model for latex and fabric tests. It is not a projector-lumen or fabric-transmission measurement.</small>
+                <small class="control-note">Optional illustrative surface response. Enable Material preview lighting to compare reflectance/translucency; this affects the 3D preview, not the projector colour signal. Values are not physical measurements.</small>
               </details>
               <div id="shader-recent" class="shader-recent" role="group" aria-label="Recently viewed shader presets"></div>
               <div class="shader-catalog-heading"><span>PRESETS</span><small id="shader-catalog-count" role="status" aria-live="polite">${SHADER_PRESET_CATALOG.length} presets · showing 72</small></div>
@@ -4050,19 +4266,7 @@ export class StudioUI {
                 <div><dt>GPU estimate</dt><dd id="shader-gpu">LOW · 1 pass</dd></div>
               </dl>
               <p id="shader-description" class="shader-description expert-only">A quiet fallback surface that keeps the ball legible in near darkness.</p>
-              <div id="shader-parameters" class="shader-parameter-list expert-only"></div>
-              <details class="shader-look-panel expert-only">
-                <summary><span>SHAPE &amp; COLOUR</span><small>applies to every shader</small></summary>
-                <div id="shader-look-controls" class="shader-parameter-list shader-look-controls">
-                  ${SHADER_LOOK_CONTROL_DEFINITIONS.filter((control) => control.id !== "motion").map((control) => `
-                    <label class="shader-parameter" title="${control.description}">
-                      <span>${control.label}</span><output>${formatShaderLookControl(control.id, control.defaultValue)}</output>
-                      <input type="range" min="${control.min}" max="${control.max}" step="${control.step}" value="${control.defaultValue}" data-shader-look-control="${control.id}" aria-label="${control.label}">
-                    </label>
-                  `).join("")}
-                </div>
-                <button id="reset-shader-look-controls" class="wide-button shader-look-reset" type="button">Reset shape &amp; colour</button>
-              </details>
+
               <div class="shader-action-row expert-only">
                 <button id="update-selected-shader" class="wide-button primary-action" type="button">Update preset</button>
                 <button id="reset-selected-shader" class="wide-button" type="button">Restore saved preset</button>
@@ -4072,6 +4276,23 @@ export class StudioUI {
               <small class="control-note expert-only">The sphere preview runs the original procedural algorithms directly. Calibrated projector output and physical luminance remain open gates.</small>
             </section>
 
+            <section class="control-section show-controls" data-workspace-panel="looks" aria-label="Simple audiovisual show controls">
+              <div class="show-controls-heading">
+                <div><span>SHOW CONTROLS</span><strong>Make the sphere perform</strong></div>
+                <output id="looks-mode-readout">SIMPLE · CREATE A LOOK</output>
+              </div>
+              <button id="quick-audiovisual-show" class="show-controls-play" type="button">Play full audiovisual show</button>
+              <div class="show-controls-grid">
+                <label><span>Tempo <output id="quick-show-bpm-value">${DEFAULT_LIVING_SKIN_CONTROLS.bpm}</output></span><input id="quick-show-bpm" type="range" min="54" max="180" step="1" value="${DEFAULT_LIVING_SKIN_CONTROLS.bpm}"></label>
+                <label><span>Shader chopping <output id="quick-show-fragment-value">${Math.round(((DEFAULT_LIVING_SKIN_CONTROLS.variety + DEFAULT_LIVING_SKIN_CONTROLS.glitch + DEFAULT_LIVING_SKIN_CONTROLS.flashRate) / 3) * 100)}%</output></span><input id="quick-show-fragment" type="range" min="0" max="100" step="1" value="72"></label>
+                <label><span>Rhythm scatter <output id="quick-show-rhythm-value">${Math.round(DEFAULT_LIVING_SKIN_CONTROLS.eventHold * 100)}%</output></span><input id="quick-show-rhythm" type="range" min="0" max="100" step="1" value="${Math.round(DEFAULT_LIVING_SKIN_CONTROLS.eventHold * 100)}"></label>
+                <label><span>Phrase evolution <output id="quick-show-phrase-value">${Math.round(DEFAULT_LIVING_SKIN_CONTROLS.phraseEvolution * 100)}%</output></span><input id="quick-show-phrase" type="range" min="0" max="100" step="1" value="${Math.round(DEFAULT_LIVING_SKIN_CONTROLS.phraseEvolution * 100)}"></label>
+                <label><span>Sound level <output id="quick-show-sound-value">${Math.round(DEFAULT_SHADER_EVENT_SOUND_CONTROLS.level * 100)}%</output></span><input id="quick-show-sound" type="range" min="0" max="100" step="1" value="${Math.round(DEFAULT_SHADER_EVENT_SOUND_CONTROLS.level * 100)}"></label>
+                <label class="quick-sound-switch"><span>Beat sound</span><input id="quick-show-sound-enabled" type="checkbox"></label>
+              </div>
+              <div class="show-controls-help"><span>1. Choose a shader above</span><span>2. Set the rhythm</span><span>3. Press play</span></div>
+              <button id="looks-expert-toggle" class="looks-expert-toggle" type="button" aria-expanded="false">Show expert controls</button>
+            </section>
             <section class="control-section living-skin-section expert-only" data-workspace-panel="looks">
               <div class="section-heading">
                 <span>SPHERE BEAUTY</span>
@@ -4079,7 +4300,7 @@ export class StudioUI {
               </div>
               <div class="material-control-grid">
                 ${[
-                  ["beautyLighting", "PBR beauty lighting", 0, 1, 0.01, DEFAULT_LIVING_SKIN_CONTROLS.beautyLighting],
+                  ["beautyLighting", "Material preview lighting", 0, 1, 0.01, DEFAULT_LIVING_SKIN_CONTROLS.beautyLighting],
                   ["glow", "Sphere glow", 0, 1, 0.01, DEFAULT_LIVING_SKIN_CONTROLS.glow],
                 ].map(([id, label, min, max, step, value]) => `<label class="material-slider"><span>${label}<output>${Number(value).toFixed(2)}</output></span><input type="range" min="${min}" max="${max}" step="${step}" value="${value}" data-living-skin-control="${id}" aria-label="${label}"></label>`).join("")}
               </div>

@@ -29,6 +29,8 @@ export interface TrackerReplayFrame {
   };
   geometry: {
     center_norm: Pair;
+    outline_px?: [number, number][];
+    outline_support?: number;
     ellipse: {
       major_diameter_px: number;
       minor_diameter_px: number;
@@ -146,6 +148,11 @@ export function parseTrackerFrame(value: unknown, path = "frame"): TrackerReplay
       throw new Error(`${path}.geometry must be an object or null`);
     }
     assertPair(value.geometry.center_norm, `${path}.geometry.center_norm`);
+    if (value.geometry.outline_px !== undefined) {
+      const outline = value.geometry.outline_px;
+      if (!Array.isArray(outline) || (outline.length !== 0 && outline.length !== 64)) throw new Error(`${path}.geometry.outline_px must contain zero or 64 points`);
+      outline.forEach((point, i) => assertPair(point, `${path}.geometry.outline_px[${i}]`));
+    }
     if (
       !isRecord(value.geometry.ellipse) ||
       !isRecord(value.geometry.gross_deformation)

@@ -110,12 +110,14 @@ export class WebSocketTrackingAdapter implements TrackingAdapter {
    * mapping. Null when disconnected or the latest frame has no valid geometry.
    * Freshness is enforced separately by the output gate.
    */
-  imageEllipse(): { centerPx: [number, number]; majorPx: number; minorPx: number; angleDeg: number; frameWidthPx: number; frameHeightPx: number; velocityPxPerS: [number, number]; ageMs: number; confidence: number } | null {
+  imageEllipse(): { outlinePx?: [number,number][]; sequence: number; centerPx: [number, number]; majorPx: number; minorPx: number; angleDeg: number; frameWidthPx: number; frameHeightPx: number; velocityPxPerS: [number, number]; ageMs: number; confidence: number } | null {
     const frame = this.latest;
     if (this.connection !== "connected" || !frame?.geometry || !frame.state_valid) return null;
     const { center_norm, ellipse } = frame.geometry;
     const velocity = frame.velocity?.norm_per_s ?? [0, 0];
     return {
+      outlinePx: frame.measurement_valid ? frame.geometry.outline_px : undefined,
+      sequence: frame.sequence,
       centerPx: [center_norm[0] * frame.frame.width_px, center_norm[1] * frame.frame.height_px],
       majorPx: ellipse.major_diameter_px, minorPx: ellipse.minor_diameter_px, angleDeg: ellipse.angle_deg,
       frameWidthPx: frame.frame.width_px, frameHeightPx: frame.frame.height_px,

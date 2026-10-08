@@ -1,3 +1,5 @@
+import type {SphereRegistration} from "../core/sphereRegistration";
+import {fitMovingRegistration, type RegistrationPair} from "../core/movingRegistration";
 import { DEFAULT_TEST_RIG, parseTestRigSetup, testRigSignature, verticalFovFromThrow, nudgeTestRigPosition, nudgeTestRigFov, type TestRigSetup, type NudgeTarget } from '../core/testRig';
 import { describeOutputBlockReason } from '../core/projectionOutputGate';
 import { CameraControlClient, type CameraControlReply } from '../adapters/CameraControlClient';
@@ -6,13 +8,23 @@ import type { RuntimeSnapshot } from '../core/contracts';
 import type { LiveBridgeStatus } from '../adapters/WebSocketTrackingAdapter';
 import { aimAdvice, parseCameraPreview, type CameraPreview } from '../core/aimView';
 import { CalibrationSession, mappingLimitPx, scanLayoutUsable, scanQualifiesForLive, parseStructuredLightResult, type CalibrationPattern, type SessionState, type StructuredLightResult } from '../core/structuredLight';
-import { BALL_SIZE_OPTIONS, QUICK_CAMERA, cameraSettingsMatch, infraredLooksOff, infraredLooksOn, nextScanExposure } from '../core/quickStart';
+import { BALL_SIZE_OPTIONS, QUICK_CAMERA, prepare4ATonightProfile, cameraSettingsMatch, infraredLooksOff, infraredLooksOn, nextScanExposure } from '../core/quickStart';
 import { scanToRigFields, SCAN_PROFILE_KEY, type StoredScanProfile } from '../core/scanMapping';
 import { AutoCentre, measureProjectionOffset, type LiveCalibration } from '../core/autoCentre';
 import { measureProjectorDelay } from '../core/delayProbe';
 import type { HudFrame } from './CameraHud';
 
 interface TestConsoleCallbacks {
+  trackingSmoothing(percent: number): void;
+  silhouetteStatus(): string;
+  registrationSummary(): string;
+  registrationAnchor(): {centerPx:[number,number];radiusPx:number} | null;
+  applyMovingRegistration(result:ReturnType<typeof fitMovingRegistration>):void;
+  applySphereRegistration(model:SphereRegistration):void;
+  adjustApproximateMapping(x: number, y: number, scale: number): void;
+  approximateBallMapping(enabled: boolean): Promise<void>;
+  fullFrameArtworkTest(enabled: boolean): void;
+  projectorTrackingLight(enabled: boolean, level: number): void;
   blackout(active: boolean): void;
   connectTracking(url: string): void;
   prediction(ms: number): void;
@@ -56,6 +68,8 @@ interface TestConsoleCallbacks {
   setProjectionLeadS?(seconds: number): void;
 }
 const KEY = 'orbital.test-profile/1.0';
+const TONIGHT_PENDING_KEY = 'orbital.4a-2026-10-07.pending-layout';
+const TONIGHT_BACKUP_KEY = 'orbital.4a-2026-10-07.previous';
 const AUTO_CENTRE_KEY = 'orbital.live-calibration/1.0';
 const AUTO_FIT_KEY = 'orbital.auto-fit/1.0';
 const sleep = (ms: number) => new Promise<void>((resolve) => window.setTimeout(resolve, ms));
@@ -110,6 +124,9 @@ export class TestConsole {
   private aimLayer: HTMLCanvasElement | null = null;
   /** Quick start (two-button) flow state. */
   private quickBusy = false;
+  private estimatedFit={x:20,y:18,scale:1};
+  private approximateMapping = false;
+  private fullFrameArtworkTest = false;
   private quickWaiter: ((proceed: boolean) => void) | null = null;
   private scanFinished: ((state: SessionState) => void) | null = null;
   private connecting = false;
@@ -123,11 +140,39 @@ export class TestConsole {
       <div class="test-status-strip"><strong id="test-source">SIMULATION</strong><span id="test-readiness">Output blacked out</span></div>
       <div class="test-quick" id="test-quick">
         <div class="test-quick-head"><strong>Quick start</strong><span id="test-quick-link" class="control-note">Camera bridge: connecting…</span></div>
+        <div class="test-actions">
+          <button id="test-tonight-preset" type="button" class="primary-action">4A tonight · 2 m balloon</button>
+          <button id="test-tonight-restore" type="button">Restore previous profile</button>
+          <button id="test-tonight-looks" type="button">Try tonight’s looks</button>
+        </div>
+        <p id="test-tonight-status" class="control-note" role="status">4A Fitzroy · 7 October. New camera position and larger fan. Preset keeps hardware settings and backs up your previous profile.</p>
+        <div id="test-tonight-checks" class="control-note" role="group" aria-label="Tonight’s setup checks">
+          <label><input type="checkbox" style="width:auto"> Inflated diameter checked; adjust Ball if it is not 2 m</label>
+          <label><input type="checkbox" style="width:auto"> Camera sees the whole balloon and its movement area</label>
+          <label><input type="checkbox" style="width:auto"> Projector aligned; fan off and balloon still for a new scan</label>
+        </div>
         <label class="test-quick-ball">Ball<select id="test-quick-ball">${BALL_SIZE_OPTIONS.map(o => `<option value="${o.diameterM ?? ''}">${o.label}</option>`).join('')}</select></label>
         <div class="test-quick-actions">
           <button id="test-quick-scan" type="button" class="test-quick-button">1 · Scan</button>
           <button id="test-quick-live" type="button" class="test-quick-button">2 · Go live</button>
         </div>
+        <details><summary>Camera and projector calibration distances</summary>
+        <p class="control-note">Measure from each lens to the hovering balloon centre. Balloon diameter comes from Ball and equipment layout. These constrain the sphere model; marker fit alone cannot prove edge alignment.</p>
+        <div class="test-fields"><label>Camera lens to balloon centre / m<input id="test-register-camera-range" type="number" min="0.1" step="0.1" placeholder="Measured metres"></label><label>Projector lens to balloon centre / m<input id="test-register-projector-range" type="number" min="0.1" step="0.1" placeholder="Recommended check"></label><label>Distance between lenses / m<input id="test-register-baseline" type="number" min="0.01" step="0.01" placeholder="Recommended check"></label></div><label><input id="test-register-vertical" type="checkbox" checked style="width:auto"> Camera directly above projector lens</label>
+        </details>
+        <pre id="test-registration-result" hidden></pre>
+        <button id="test-moving-registration" type="button" class="test-quick-button">Align hovering balloon</button>
+        <button id="test-moving-registration-cancel" type="button" hidden>Cancel alignment</button>
+        <p class="control-note">Uses measured camera distance and brief rings to fit a sphere model including camera/projector parallax. Fan can stay on. Keep the window unchanged. Camera lens distortion remains uncalibrated.</p>
+        <label><input id="test-approximate-mapping" type="checkbox" style="width:auto"> Estimated balloon mapping + short prediction</label>
+        <p class="control-note">Follows the detected balloon using an approximate camera-to-projector fit. Smooths motion, predicts at most 120 ms, holds that estimate briefly, then fades out by 1.5 s without detection. Fine-tune arrows and size buttons adjust this estimate. Not measured calibration. Recheck alignment after moving equipment.</p>
+        <label>Tracking smoothing <output id="test-smoothing-value">80% · Steady</output><input id="test-smoothing" aria-label="Tracking smoothing" type="range" min="0" max="100" step="5" value="80"></label>
+        <p class="control-note">Smooths position, size and the measured 64-point balloon edge in estimated mapping. Removes tiny jitters and isolated jumps. Shape responds faster than position. Higher values are steadier but follow movement more slowly. Zero turns smoothing off.</p>
+        <label><input id="test-full-frame-artwork" type="checkbox" style="width:auto"> Full-frame artwork test (unmapped)</label>
+        <p class="control-note">Immediate artwork across the whole projector image. Also lights the background. Does not follow or clip to the balloon. Turn off to return to calibrated mapping. B blacks out both modes.</p>
+        <label><input id="test-tracking-light" type="checkbox" style="width:auto"> Projector-only tracking light</label>
+        <label>Tracking light level / %<input id="test-tracking-light-level" type="range" min="20" max="100" step="5" value="55"></label>
+        <p class="control-note">Keeps a steady grey field beneath the artwork and across the projector picture. Dark artwork areas become lighter. If tracking drops, illumination remains while mapped artwork stops. B still blacks out everything. Uses your existing scan; alignment at the new hovering depth is approximate.</p>
         <p id="test-quick-say" class="test-quick-say" role="status" aria-live="polite" data-tone="wait">Put the projector window on the projector in full screen, then press Scan.</p>
         <div class="test-quick-actions" id="test-quick-extra" hidden><button id="test-quick-continue" type="button">Continue</button><button id="test-quick-cancel" type="button">Cancel</button></div>
         <div class="test-quick-actions test-quick-fullscreen-row"><button id="test-quick-fullscreen" type="button" title="Opens the projector window if needed, moves it to the projector and makes it full screen">⛶ Projector full screen</button></div>
@@ -242,6 +287,18 @@ export class TestConsole {
     if (header) header.append(bar); else document.querySelector('.studio-shell')?.prepend(bar);
     try { const saved = localStorage.getItem(KEY); if (saved) this.profile = parseTestProfile(JSON.parse(saved)); } catch { this.message('Stored profile invalid or unavailable. Defaults loaded.'); }
     this.fill();
+    try {
+      const pending = JSON.parse(localStorage.getItem(TONIGHT_PENDING_KEY) ?? 'null') as { baseRigSignature: string; proposedRig: TestRigSetup } | null;
+      if (pending && this.profile.name === '4A Fitzroy / tonight / 2 m balloon' && pending.baseRigSignature === testRigSignature(this.profile.rig)) {
+        this.fillRig(pending.proposedRig);
+        this.el('test-layout-state').textContent = '2 m setup still pending. Enter the actual centre and lens positions, then Apply layout. Saved positions were not changed.';
+        this.el('test-tonight-status').textContent = 'Tonight’s 2 m selection is retained. The layout still needs your actual positions before it can be applied.';
+      }
+    } catch { /* Invalid pending draft never replaces a validated profile. */ }
+    try { this.el<HTMLButtonElement>('test-tonight-restore').disabled = !localStorage.getItem(TONIGHT_BACKUP_KEY); } catch { this.el<HTMLButtonElement>('test-tonight-restore').disabled = true; }
+    this.el('test-tonight-looks').addEventListener('click', () => document.querySelector<HTMLButtonElement>('[data-workspace-tab="looks"]')?.click());
+    this.el('test-tonight-preset').addEventListener('click', () => this.attempt(() => this.prepareTonight()));
+    this.el('test-tonight-restore').addEventListener('click', () => this.attempt(() => this.restoreBeforeTonight()));
     this.callbacks.blackout(true);
     document.getElementById('test-blackout')!.addEventListener('click', () => this.setBlackout(true));
     document.getElementById('test-release')!.addEventListener('click', () => this.attempt(() => { this.requireAppliedRig(); this.setBlackout(false); }));
@@ -252,7 +309,7 @@ export class TestConsole {
     this.section.querySelectorAll<HTMLButtonElement>('[data-camera]').forEach(button => button.addEventListener('click', () => void this.command(button.dataset.camera!)));
     this.el('test-apply-rig').addEventListener('click', () => this.attempt(() => {
       this.requireStopped(); const next = this.read(); this.applyRig(next.rig); this.profile = next;
-      localStorage.setItem(KEY, JSON.stringify(next));
+      localStorage.setItem(KEY, JSON.stringify(next)); localStorage.removeItem(TONIGHT_PENDING_KEY);
       this.message('Layout applied and saved. Output blacked out; old alignment cleared. Use a stationary ball first.');
     }));
     this.el('test-reset-rig').addEventListener('click', () => this.attempt(() => {
@@ -276,6 +333,68 @@ export class TestConsole {
     this.section.querySelectorAll<HTMLButtonElement>('[data-nudge-fov]').forEach(button => button.addEventListener('click', () => this.attempt(() => {
       this.nudge(rig => nudgeTestRigFov(rig, Number(button.dataset.nudgeFov)));
     })));
+    try {
+      const fit=JSON.parse(localStorage.getItem('orbital.estimated-fit/1.0') ?? 'null');
+      if(fit && Number.isFinite(fit.x) && Number.isFinite(fit.y) && Number.isFinite(fit.scale) && fit.scale>=.5 && fit.scale<=2) this.estimatedFit=fit;
+    } catch { /* Use the current test estimate. */ }
+    this.callbacks.adjustApproximateMapping(this.estimatedFit.x,this.estimatedFit.y,this.estimatedFit.scale);
+    const smoothing=this.el<HTMLInputElement>('test-smoothing');
+    try {
+      const saved=Number(localStorage.getItem('orbital.tracking-smoothing/1.0') ?? 80);
+      if(Number.isFinite(saved)) smoothing.value=String(Math.max(0,Math.min(100,saved)));
+    } catch { /* Keep steady default. */ }
+    const setSmoothing=()=>{
+      const value=Number(smoothing.value);
+      this.el('test-smoothing-value').textContent=`${value}%${value>=75 ? ' · Steady' : ''}`;
+      this.callbacks.trackingSmoothing(value);
+      localStorage.setItem('orbital.tracking-smoothing/1.0',String(value));
+    };
+    smoothing.addEventListener('input',setSmoothing);setSmoothing();
+    try {const saved=JSON.parse(localStorage.getItem('orbital.registration-distances/1.0') ?? 'null');if(saved){this.el<HTMLInputElement>('test-register-camera-range').value=String(saved.cameraRange||'');this.el<HTMLInputElement>('test-register-projector-range').value=String(saved.projectorRange||'');this.el<HTMLInputElement>('test-register-baseline').value=String(saved.baseline||'');}}catch{ /* require fresh measured distances */ }
+    this.el('test-moving-registration').addEventListener('click',()=>void this.alignHoveringBalloon());
+    this.el('test-moving-registration-cancel').addEventListener('click',()=>{this.registrationCancelled=true;});
+    this.el('test-approximate-mapping').addEventListener('change', async () => {
+      const control = this.el<HTMLInputElement>('test-approximate-mapping');
+      try {
+        await this.callbacks.approximateBallMapping(control.checked);
+        this.approximateMapping = control.checked;
+        localStorage.setItem("orbital.estimated-mode/1.0",control.checked ? "1" : "0");
+        if (control.checked) {
+          this.fullFrameArtworkTest = false;
+          this.el<HTMLInputElement>('test-full-frame-artwork').checked = false;
+        }
+      } catch(e) { control.checked=false; this.message(String(e)); }
+    });
+    if(localStorage.getItem('orbital.estimated-mode/1.0')==='1') {
+      const control=this.el<HTMLInputElement>('test-approximate-mapping');
+      control.checked=true;control.dispatchEvent(new Event('change'));
+    }
+    this.el('test-full-frame-artwork').addEventListener('change', () => {
+      this.fullFrameArtworkTest = this.el<HTMLInputElement>('test-full-frame-artwork').checked;
+      this.callbacks.fullFrameArtworkTest(this.fullFrameArtworkTest);
+      if (this.fullFrameArtworkTest) {
+        this.approximateMapping=false;
+        localStorage.setItem("orbital.estimated-mode/1.0","0");
+        this.el<HTMLInputElement>('test-approximate-mapping').checked=false;
+        void this.callbacks.approximateBallMapping(false);
+      }
+    });
+    const updateTrackingLight = () => {
+      const enabled = this.el<HTMLInputElement>('test-tracking-light').checked;
+      const level = Number(this.el<HTMLInputElement>('test-tracking-light-level').value) / 100;
+      this.callbacks.projectorTrackingLight(enabled, level);
+      localStorage.setItem('orbital.projector-tracking-light/1.0', JSON.stringify({ enabled, level }));
+    };
+    try {
+      const saved = JSON.parse(localStorage.getItem('orbital.projector-tracking-light/1.0') ?? 'null');
+      if (saved) {
+        this.el<HTMLInputElement>('test-tracking-light').checked = saved.enabled === true;
+        this.el<HTMLInputElement>('test-tracking-light-level').value = String(Number.isFinite(saved.level) ? Math.max(20, Math.min(100, saved.level * 100)) : 55);
+      }
+    } catch { /* Use visible defaults for corrupt stored preferences. */ }
+    this.el('test-tracking-light').addEventListener('change', updateTrackingLight);
+    this.el('test-tracking-light-level').addEventListener('input', updateTrackingLight);
+    updateTrackingLight();
     this.el('test-infrared').addEventListener('change', () => this.irNote());
     this.el('test-aim-toggle').addEventListener('click', () => this.setAim(!this.aimOn));
     this.el('test-quick-scan').addEventListener('click', () => { if (this.quickOpenProjectorFirst()) void this.quickScan(); });
@@ -334,6 +453,63 @@ export class TestConsole {
     // Connect to the camera bridge by itself; reconnect whenever the link drops.
     // Keep trying until the camera bridge is up: Studio switches to live by itself when it is.
     window.setTimeout(() => void this.quickEnsureConnected().then(ok => { if (!ok) this.scheduleReconnect(); }), 400);
+  }
+
+  private clearAlignmentForVenueChange(): void {
+    this.setBlackout(true);
+    this.setScanLive(false, false);
+    this.scanResult = null; this.scanSignature = null; this.pendingScanSignature = null;
+    this.el('test-scan-card').hidden = true;
+    this.el<HTMLButtonElement>('test-scan-use-layout').disabled = true;
+    this.el<HTMLButtonElement>('test-scan-use-live').disabled = true;
+    this.el<HTMLProgressElement>('test-scan-progress').value = 0;
+    this.callbacks.clearPattern();
+    this.setCalibration(null);
+    this.callbacks.setProjectionLeadS?.(0);
+    this.probeDoneThisSession = false; this.measuredDelayMs = null;
+    localStorage.removeItem(SCAN_PROFILE_KEY); localStorage.removeItem(AUTO_CENTRE_KEY);
+    this.el('test-scan-status').textContent = 'Equipment arrangement changed. A fresh stationary scan is required.';
+  }
+
+  private prepareTonight(): void {
+    this.requireStopped();
+    if (this.quickBusy || this.busy || this.scan.state === 'running') throw new Error('Finish or cancel the current camera operation before changing the venue profile.');
+    const current = this.read();
+    const prepared = prepare4ATonightProfile(current);
+    // Preserve both unsaved form settings and the exact saved profile/scan before switching.
+    if (!localStorage.getItem(TONIGHT_BACKUP_KEY)) localStorage.setItem(TONIGHT_BACKUP_KEY, JSON.stringify({
+      profile: current, savedProfile: localStorage.getItem(KEY), scan: localStorage.getItem(SCAN_PROFILE_KEY),
+      alignment: localStorage.getItem(AUTO_CENTRE_KEY), quickBall: localStorage.getItem('orbital.quick-ball'), savedAt: new Date().toISOString(),
+    }));
+    this.clearAlignmentForVenueChange();
+    this.profile = prepared.profile; this.fill();
+    this.el<HTMLSelectElement>('test-quick-ball').value = '2';
+    this.el<HTMLInputElement>('test-scan-diameter').value = '2';
+    localStorage.setItem('orbital.quick-ball', '2'); localStorage.setItem(KEY, JSON.stringify(this.profile));
+    if (prepared.layoutNeedsReview) {
+      localStorage.setItem(TONIGHT_PENDING_KEY, JSON.stringify({ baseRigSignature: testRigSignature(prepared.profile.rig), proposedRig: prepared.proposedRig }));
+      this.fillRig(prepared.proposedRig);
+      this.el('test-layout-state').textContent = '2 m selected. Existing positions do not fit this balloon. Enter the actual centre and lens positions, then Apply layout. No positions were invented.';
+    }
+    if (!prepared.layoutNeedsReview) localStorage.removeItem(TONIGHT_PENDING_KEY);
+    this.el<HTMLButtonElement>('test-tonight-restore').disabled = false;
+    this.el('test-tonight-status').textContent = '4A tonight selected. Previous profile preserved. Hardware settings and typed positions retained, old alignment cleared. Venue and fan notes are editable in Hardware, lighting and observations below.';
+    this.quickSay(prepared.layoutNeedsReview ? '2 m selected. Check the pending layout positions below, then run Scan with the fan off.' : '2 m selected. Check the three setup points, put the projector in full screen, then Scan with the fan off.');
+  }
+
+  private restoreBeforeTonight(): void {
+    this.requireStopped();
+    if (this.quickBusy || this.busy || this.scan.state === 'running') throw new Error('Finish or cancel the current camera operation before restoring the profile.');
+    const raw = localStorage.getItem(TONIGHT_BACKUP_KEY); if (!raw) throw new Error('No previous profile backup found.');
+    const backup = JSON.parse(raw) as { profile: unknown; quickBall: string | null };
+    const restored = parseTestProfile(backup.profile);
+    this.clearAlignmentForVenueChange(); localStorage.removeItem(TONIGHT_PENDING_KEY); this.profile = restored; this.fill();
+    localStorage.setItem(KEY, JSON.stringify(restored));
+    const ball = this.el<HTMLSelectElement>('test-quick-ball');
+    ball.value = [...ball.options].some(option => option.value === backup.quickBall) ? backup.quickBall! : String(restored.rig.ballDiameterM);
+    localStorage.setItem('orbital.quick-ball', ball.value);
+    this.el('test-tonight-status').textContent = 'Previous profile restored. Output stays black. Archived alignment was not reactivated; scan the current physical arrangement again.';
+    this.quickSay('Previous profile restored. Check the actual ball size and run a fresh Scan.');
   }
 
   private restoreScan(): void {
@@ -637,7 +813,7 @@ export class TestConsole {
       this.el('test-device').textContent = JSON.stringify(reply.devices ? { devices: reply.devices, ...reply.status } : reply.status, null, 2);
       this.message(`Acknowledged: ${action}. ${reply.status.running ? 'Acquisition running.' : 'Acquisition stopped.'}`);
     } catch (e) { this.latestControl = null; this.el('test-device').textContent = 'No current acknowledged device state. Refresh status.'; this.message(e instanceof Error ? e.message : String(e)); }
-    finally { this.busy = false; this.section.querySelectorAll<HTMLButtonElement>('[data-camera]').forEach(b => { b.disabled = false; }); if (this.recording) this.setSessionControlsDisabled(true); }
+    finally { this.renderQuickLink(); this.busy = false; this.section.querySelectorAll<HTMLButtonElement>('[data-camera]').forEach(b => { b.disabled = false; }); if (this.recording) this.setSessionControlsDisabled(true); }
   }
   private setBlackout(active: boolean): void {
     this.blackedOut = active;
@@ -662,16 +838,18 @@ export class TestConsole {
     this.el('test-source').textContent = snapshot.world.mode === 'live' ? `${live.source.toUpperCase()} / ${live.connection.toUpperCase()}` : snapshot.world.mode.toUpperCase();
     const blockReason = this.callbacks.outputBlockReason();
     this.el('test-readiness').textContent = this.blackedOut ? 'OUTPUT BLACKOUT'
+      : this.approximateMapping ? `Estimated mapping / ${this.callbacks.silhouetteStatus()} / ${this.callbacks.registrationSummary()}`
+      : this.fullFrameArtworkTest ? 'Full-frame artwork test / unmapped, no balloon boundary tracking'
       : blockReason ? `Live output blocked: ${describeOutputBlockReason(blockReason)}`
       : snapshot.world.mode === 'live' ? (this.scanLive ? 'Live output allowed / structured-light 2D mapping, exact only at scanned depth' : 'Live output allowed / calibrated tracking')
       : `Simulation output allowed / ${snapshot.world.mode} data, not camera tracking`;
     if (!this.feedRunning && this.feedWanted()) void this.feedLoop();
     if (this.liveOutputShowing()) this.liveSinceMs ??= nowMs; else if (!this.probing) this.liveSinceMs = null;
     if (!this.probeDoneThisSession && this.liveSinceMs !== null && nowMs - this.liveSinceMs > 2000) void this.runDelayProbe();
-    const edge = this.callbacks.projectedEdgeNote?.() ?? null;
+    const edge = (this.fullFrameArtworkTest || this.approximateMapping) ? null : this.callbacks.projectedEdgeNote?.() ?? null;
     const [cxp, cyp] = this.autoCentre.correctionPx;
     const size = this.autoCentre.sizeScale;
-    const centring = this.scanLive && (Math.hypot(cxp, cyp) >= 0.5 || Math.abs(size - 1) >= 0.01) ? ` Fit${this.autoFitEnabled ? ' (auto)' : ' (manual)'}: size ${Math.round(size * 100)}%, shifted ${Math.abs(cxp).toFixed(0)} px ${cxp >= 0 ? 'right' : 'left'} and ${Math.abs(cyp).toFixed(0)} px ${cyp >= 0 ? 'down' : 'up'} (camera).` : '';
+    const centring = this.scanLive && !this.approximateMapping && !this.fullFrameArtworkTest && (Math.hypot(cxp, cyp) >= 0.5 || Math.abs(size - 1) >= 0.01) ? ` Fit${this.autoFitEnabled ? ' (auto)' : ' (manual)'}: size ${Math.round(size * 100)}%, shifted ${Math.abs(cxp).toFixed(0)} px ${cxp >= 0 ? 'right' : 'left'} and ${Math.abs(cyp).toFixed(0)} px ${cyp >= 0 ? 'down' : 'up'} (camera).` : '';
     const delay = this.probeDoneThisSession && !this.probing ? (this.measuredDelayMs !== null ? ` Delay measured: ${this.measuredDelayMs} ms.` : ' Delay not measured; using 45 ms.') : '';
     this.el('test-quick-readiness').textContent = `Projector: ${this.el('test-readiness').textContent}${edge ? `. Warning: ${edge}.` : ''}${centring}${delay}`;
     const stats = this.metrics.snapshot();
@@ -820,7 +998,7 @@ export class TestConsole {
   }
 
   private liveOutputShowing(): boolean {
-    return this.scanLive && !this.blackedOut && this.callbacks.outputBlockReason() === null;
+    return !this.fullFrameArtworkTest && !this.approximateMapping && this.scanLive && !this.blackedOut && this.callbacks.outputBlockReason() === null;
   }
 
   private autoCentreActive(): boolean {
@@ -840,6 +1018,20 @@ export class TestConsole {
    * back. Stored with the scan like the self-fit.
    */
   private fineTune(action: string, big: boolean): void {
+    if (this.approximateMapping) {
+      const move=big ? 40 : 8, size=big ? 1.1 : 1.02;
+      if(action==='reset') this.estimatedFit={x:0,y:0,scale:1};
+      if(action==='left') this.estimatedFit.x-=move;
+      if(action==='right') this.estimatedFit.x+=move;
+      if(action==='up') this.estimatedFit.y-=move;
+      if(action==='down') this.estimatedFit.y+=move;
+      if(action==='bigger') this.estimatedFit.scale=Math.min(2,this.estimatedFit.scale*size);
+      if(action==='smaller') this.estimatedFit.scale=Math.max(.5,this.estimatedFit.scale/size);
+      this.callbacks.adjustApproximateMapping(this.estimatedFit.x,this.estimatedFit.y,this.estimatedFit.scale);
+      localStorage.setItem("orbital.estimated-fit/1.0",JSON.stringify(this.estimatedFit));
+      this.quickSay(`Estimated fit: horizontal ${this.estimatedFit.x} px, vertical ${this.estimatedFit.y} px, size ${Math.round(this.estimatedFit.scale*100)}%.`, 'good');
+      return;
+    }
     if (!this.scanResult) { this.quickSay('Scan first: fine-tuning adjusts the scan’s mapping.'); return; }
     if (action === 'reset') {
       this.setCalibration(null);
@@ -1191,12 +1383,66 @@ export class TestConsole {
     }
   }
 
+  private registrationCancelled=false;
+  private async alignHoveringBalloon():Promise<void> {
+    if(this.quickBusy)return;
+    const cameraRange=Number(this.el<HTMLInputElement>('test-register-camera-range').value),projectorRange=Number(this.el<HTMLInputElement>('test-register-projector-range').value),baseline=Number(this.el<HTMLInputElement>('test-register-baseline').value);
+    const diameter=this.readRig().ballDiameterM;
+    if(!Number.isFinite(cameraRange)||cameraRange<=diameter*.75){this.quickSay('Enter the measured camera lens to balloon centre distance under Calibration distances. The flat marker fit cannot correctly predict the balloon edge.','bad');return;}
+    localStorage.setItem('orbital.registration-distances/1.0',JSON.stringify({cameraRange,projectorRange,baseline}));
+    this.registrationCancelled=false;this.setQuickBusy(true);
+    const button=this.el<HTMLButtonElement>('test-moving-registration');button.disabled=true;
+    this.el('test-moving-registration-cancel').hidden=false;
+    const previousBlackout=this.blackedOut;
+    try {
+      await this.quickEnsureCamera();
+      if(!this.callbacks.hasProjectorWindow())throw new Error('Open the projector window first');
+      if(!this.approximateMapping){await this.callbacks.approximateBallMapping(true);this.approximateMapping=true;this.el<HTMLInputElement>('test-approximate-mapping').checked=true;localStorage.setItem('orbital.estimated-mode/1.0','1');}
+      const anchor=this.callbacks.registrationAnchor();if(!anchor)throw new Error('Wait for a fresh detected balloon');
+      const raster=this.callbacks.outputRaster(),signature=this.callbacks.projectorSurfaceSignature();
+      const step=Math.max(65,Math.min(150,anchor.radiusPx*.42));
+      const pairs:RegistrationPair[]=[];
+      const positions=[[0,0],[-1,0],[1,0],[0,-1],[0,1],[-1,-1],[1,-1],[-1,1],[1,1]];
+      this.setBlackout(true);
+      for(let i=0;i<positions.length;i++){
+        if(this.registrationCancelled)throw new Error('Alignment cancelled; previous fit preserved');
+        if(signature!==this.callbacks.projectorSurfaceSignature())throw new Error('Projector window moved during alignment; previous fit preserved');
+        const position=positions[i],x=anchor.centerPx[0]+position[0]*step,y=anchor.centerPx[1]+position[1]*step;
+        this.quickSay(`Measuring marker ${i+1}/${positions.length}. Keep the fan running and projector window unchanged.`);
+        await this.callbacks.showPattern({kind:'black'},raster.width,raster.height);await sleep(160);
+        await this.client.request('registration-baseline');
+        await this.callbacks.showPattern({kind:'spot',x,y,radius:36},raster.width,raster.height);await sleep(180);
+        try {const reply=await this.client.request('registration-marker');const p=reply.marker?.camera_px;if(p?.length===2 && p.every(Number.isFinite))pairs.push({camera:p,projector:[x,y],ballCenter:reply.marker?.ball_center_px,ballRadius:reply.marker?.radius_px});}catch { /* A missed dot is excluded, never guessed. */ }
+      }
+      const report=this.el('test-registration-result');report.hidden=false;report.textContent=JSON.stringify({pairs},null,2);
+      const result=fitMovingRegistration(pairs);
+      if(signature!==this.callbacks.projectorSurfaceSignature())throw new Error('Projector window changed; previous fit preserved');
+      report.textContent=JSON.stringify({localMarkerFit:result,pairs},null,2);
+      const solved=await this.client.request('registration-solve',{pairs,camera_distance_m:cameraRange,ball_diameter_m:diameter,projector_distance_m:projectorRange||null,baseline_m:baseline||null,vertical_baseline_m:this.el<HTMLInputElement>('test-register-vertical').checked && baseline>0 ? baseline : null});
+      if(!solved.registration)throw new Error('No supported sphere model was returned');
+      this.callbacks.applySphereRegistration(solved.registration);
+      report.textContent=JSON.stringify({model:solved.registration,pairs},null,2);
+      this.estimatedFit={x:0,y:0,scale:1};localStorage.setItem('orbital.estimated-fit/1.0',JSON.stringify(this.estimatedFit));
+      this.callbacks.adjustApproximateMapping(0,0,1);
+      this.quickSay(`Sphere alignment applied: ${result.points} markers, ${solved.registration.rmsPx.toFixed(1)} px residual, ${solved.registration.heldOutMaxPx.toFixed(1)} px held-out error. Check the edge; lens assumptions still apply.`, 'good');
+    }catch(e){this.quickSay(e instanceof Error ? e.message : String(e),'bad');}
+    finally {this.callbacks.clearPattern();this.setBlackout(previousBlackout);button.disabled=false;this.el('test-moving-registration-cancel').hidden=true;this.setQuickBusy(false);}
+  }
+
   /** Button 2: tracking settings, infrared check, scan mapping, bridge tracking, grid, release blackout. */
   private async quickGoLive(): Promise<void> {
     if (this.quickBusy) return;
     this.setQuickBusy(true);
     try {
       await this.quickEnsureCamera();
+      if(this.approximateMapping) {
+        await this.waitForProjectorFullscreen();
+        if(!this.quickRequireProjector()) return;
+        this.callbacks.connectTracking(this.el<HTMLInputElement>('test-url').value.trim() || this.profile.bridgeUrl);
+        this.setBlackout(false);
+        this.quickSay('Estimated balloon mapping is live. Camera settings and selected artwork are preserved. Alignment is approximate.', 'good');
+        return;
+      }
       if (!scanQualifiesForLive(this.scanResult)) throw new Error('Press Scan first. Live projection uses the scan to line the picture up with the ball.');
       await this.waitForProjectorFullscreen();
       if (!this.quickRequireProjector()) return;

@@ -73,6 +73,8 @@ describe("Orbital shader registry", () => {
       "reaction-diffusion",
       "ink-bloom",
       "coral-growth",
+      "rainbow-filaments",
+      "chromatic-contours",
     ]);
     expect(listShaders({ gpuCost: "low", projectorCount: 5 }).length).toBeGreaterThan(0);
     expect(listShaders({ tag: "prediction" }).map((shader) => shader.id)).toEqual([
@@ -188,8 +190,8 @@ describe("Orbital shader registry", () => {
     );
     expect(grid?.preset.shaderId).toBe("geometric-grid");
     expect(grid?.preset.seed).toBe(repeat?.preset.seed);
-    expect(CURATED_SHADER_REGISTRY.shaders).toHaveLength(43);
-    expect(SHADER_PRESET_CATALOG).toHaveLength(688);
+    expect(CURATED_SHADER_REGISTRY.shaders).toHaveLength(51);
+    expect(SHADER_PRESET_CATALOG).toHaveLength(816);
   });
 
   it("matches human search phrases across punctuation and card metadata", () => {

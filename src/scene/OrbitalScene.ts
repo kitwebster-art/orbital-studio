@@ -1,8 +1,12 @@
+import { silhouetteRadii } from "../core/silhouetteMask";
+import { trackingLightAllowed, trackingLightLinear } from "../core/projectorTrackingLight";
+import { ContentMotion, type ContentMotionSettings } from "../core/contentMotion";
 import { parseTestRigSetup, applyTestRigToProjectionRig, applyTestRigPreview, testRigOverviewCamera, type TestRigSetup } from "../core/testRig";
 import { projectorWarpMatrix } from "../core/projectorWarp";
 import { projectionOutputBlockReason, type StructuredLightGateInput } from "../core/projectionOutputGate";
 import { orthoFramingForEllipse, type ImageEllipse } from "../core/scanMapping";
 import { OutputHold, ellipseEdgeNote } from "../core/outputHold";
+import { BoundedPreviewCache, PreviewWorkBudget } from "../core/previewWorkBudget";
 import * as THREE from "three";
 import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 
@@ -183,7 +187,27 @@ export class OrbitalScene {
   private readonly installationCameraGroup = new THREE.Group();
   private readonly installationNirGroup = new THREE.Group();
 
+  private readonly worldContentMotion = new ContentMotion();
+  private readonly scanContentMotion = new ContentMotion();
+  public setContentMotion(settings: ContentMotionSettings): void {
+    this.worldContentMotion.set(settings); this.scanContentMotion.set(settings);
+  }
+  public getContentMotion(): ContentMotionSettings { return this.worldContentMotion.getSettings(); }
+  public recenterContentMotion(): void { this.worldContentMotion.recenter(); this.scanContentMotion.recenter(); }
+  public getContentMotionState() {
+    const scanned = !!this.structuredLight?.active;
+    return { ...(scanned ? this.scanContentMotion : this.worldContentMotion).snapshot(),
+      coordinateSpace: scanned ? 'projector-pixels' as const : 'world-metres' as const };
+  }
+  private applyContentMotionUniforms(state: ReturnType<ContentMotion['snapshot']>, scale: number): void {
+    const uniforms = this.surfaceMaterial.uniforms;
+    if (!uniforms.uContentMotionEnabled) return;
+    uniforms.uContentMotionEnabled.value = state.mode === 'surface' ? 0 : 1;
+    uniforms.uContentMotionScale.value = scale;
+    (uniforms.uContentMotionOffset.value as THREE.Vector3).set(state.offset.x, state.offset.y, state.offset.z);
+  }
   private readonly surfaceMaterial = createOrbitalSurfaceMaterial();
+  private readonly silhouetteTexture = new THREE.DataTexture(new Float32Array(128),128,1,THREE.RedFormat,THREE.FloatType);
   private readonly thumbnailMaterial = createOrbitalSurfaceMaterial();
   private readonly thumbnailScene = new THREE.Scene();
   private readonly thumbnailCamera = new THREE.PerspectiveCamera(34, 1.5, 0.1, 10);
@@ -311,12 +335,39 @@ export class OrbitalScene {
   private rigBeforeTest: ProjectionRigConfig | null = null;
   private lightweightPreview = false;
   private coverageDirty = true;
+  private readonly previewWorkBudget = new PreviewWorkBudget();
+  private visibleProjectorPreviewIndices = new Set<number>();
+  private coverageUpdateCount = 0;
+  private mappingReadbackCount = 0;
+  private thumbnailReadbackCount = 0;
+  private thumbnailCacheHitCount = 0;
+  private readonly thumbnailCache = new BoundedPreviewCache<ImageData>(96);
+
+  /** Only dashboard tiles or the inline inspector consume diagnostic GPU readbacks. */
+  public setProjectorPreviewIndices(indices: readonly number[]): void {
+    this.visibleProjectorPreviewIndices = new Set(indices.filter(index => Number.isInteger(index) && index >= 0 && index < this.projectorOutputCanvases.length));
+    this.container.dataset.visibleProjectorPreviews = [...this.visibleProjectorPreviewIndices].join(',');
+    this.syncProjectorPreviewPauseState();
+  }
+
+  private syncProjectorPreviewPauseState(): void {
+    const outputPriority = this.projectorWindowRenderers.size > 0;
+    this.container.dataset.mappingPreviewOutputPriority = String(outputPriority);
+    this.projectorOutputCanvases.forEach((canvas, index) => {
+      const paused = outputPriority || !this.visibleProjectorPreviewIndices.has(index);
+      const pausedReason = outputPriority ? 'paused-output-priority' : 'paused-hidden';
+      if (canvas.dataset.previewPaused !== String(paused) || (paused && canvas.dataset.previewState !== pausedReason)) {
+        canvas.dataset.previewPaused = String(paused);
+        canvas.dataset.previewState = paused ? pausedReason : 'awaiting-frame';
+      }
+    });
+  }
 
   /**
    * Lightweight preview keeps the control page cheap while the physical test
-   * bench or a projector output window needs the GPU: the five mapping-lab
-   * tiles are not re-rendered and coverage analysis only runs when the rig
-   * changes. The main viewport still renders whenever the caller asks.
+   * bench or a projector output window needs the GPU. Diagnostic coverage
+   * uses a ten-Hz budget. Visible mapping tiles use at most ten Hz and pause
+   * entirely while a direct projector window owns the GPU.
    */
   public setLightweightPreview(active: boolean): void {
     if (this.lightweightPreview === active) return;
@@ -407,10 +458,20 @@ export class OrbitalScene {
     this.container.dataset.testRigFocus = "ball";
   }
 
+  private projectorTrackingLight = { enabled: false, level: 0.55 };
+  public setProjectorTrackingLight(enabled: boolean, level: number): void {
+    this.projectorTrackingLight = { enabled, level: Number.isFinite(level) ? THREE.MathUtils.clamp(level, 0, 1) : 0.55 };
+  }
+  private approximateBallMapping: (() => (ImageEllipse & { opacity?: number; phase?: string }) | null) | null = null;
+  public setApproximateBallMapping(sample: (() => (ImageEllipse & { opacity?: number; phase?: string }) | null) | null): void { this.approximateBallMapping=sample; }
+  private fullFrameArtworkTest = false;
+  public setFullFrameArtworkTest(enabled: boolean): void { this.fullFrameArtworkTest = enabled; }
   private outputBlackout = false;
   private outputWorldReceivedAtMs = 0;
 
   private outputBlockReason(index = 0): string | null {
+    if (this.outputBlackout) return "OPERATOR_BLACKOUT";
+    if ((this.fullFrameArtworkTest || this.approximateBallMapping) && index === 0) return null;
     if (this.outputWorld?.mode === "live" && performance.now() - this.outputWorldReceivedAtMs + this.outputWorld.diagnostics.sourceAgeMs > 80) return "LIVE_TRACKING_EXPIRED";
     const reason = projectionOutputBlockReason(this.outputBlackout, this.outputWorld, this.projectionRig, index, this.structuredLight);
     if (reason || index !== 0 || !this.structuredLight?.active) return reason;
@@ -435,6 +496,7 @@ export class OrbitalScene {
   public getProjectedEdgeNote(): string | null { return this.projectedEdgeNote; }
 
   public setStructuredLightOutput(state: (StructuredLightGateInput & { ellipse: () => ImageEllipse | null; blockReason?: () => string | null }) | null): void {
+    if (state !== this.structuredLight) this.scanContentMotion.invalidate();
     this.structuredLight = state;
     this.container.dataset.outputCalibration = state?.active ? "structured-light" : "measured";
   }
@@ -459,6 +521,10 @@ export class OrbitalScene {
 
   public constructor(container: HTMLElement, options: OrbitalSceneOptions = {}) {
     this.container = container;
+    this.container.dataset.coverageUpdates = '0';
+    this.container.dataset.mappingPreviewReadbacks = '0';
+    this.container.dataset.shaderThumbnailReadbacks = '0';
+    this.container.dataset.shaderThumbnailCacheHits = '0';
     this.projectorOutputCanvases = options.projectorOutputCanvases ?? [];
     this.onProjectorOutputFrame = options.onProjectorOutputFrame;
 
@@ -489,6 +555,9 @@ export class OrbitalScene {
     this.container.append(this.renderer.domElement);
 
     this.thumbnailScene.background = new THREE.Color(0x020506);
+    // The shader emits linear light; an sRGB attachment stores display-ready
+    // bytes for ImageData, matching the direct WebGL canvas output transfer.
+    this.thumbnailTarget.texture.colorSpace = THREE.SRGBColorSpace;
     this.thumbnailCamera.position.set(0, 0, 3.35);
     this.thumbnailCamera.lookAt(0, 0, 0);
     this.thumbnailScene.add(
@@ -636,7 +705,7 @@ export class OrbitalScene {
     this.outputWorld = snapshot.world;
     this.outputWorldReceivedAtMs = performance.now();
     const outputBlock = this.outputBlockReason();
-    if (outputBlock && !["SELECTED_PROJECTOR_NOT_CALIBRATED", "PROJECTOR_REPROJECTION_ERROR_EXCEEDS_2PX"].includes(outputBlock)) this.clearProjectorOutputs(outputBlock);
+    if (outputBlock && !this.projectorTrackingLight.enabled && !["SELECTED_PROJECTOR_NOT_CALIBRATED", "PROJECTOR_REPROJECTION_ERROR_EXCEEDS_2PX"].includes(outputBlock)) this.clearProjectorOutputs(outputBlock);
     const safeDeltaS = THREE.MathUtils.clamp(deltaS, 0, 0.1);
     const motion = sampleMotion(snapshot.showTimeS, safeDeltaS, this.reducedMotion);
     // The shader clock can also be advanced by a visible projector window.
@@ -716,13 +785,16 @@ export class OrbitalScene {
     } else {
       this.currentRadii.copy(DEFAULT_RADII_M);
     }
-    if (this.coverageDirty || (!this.lightweightPreview && renderDashboard) || !this.coverageAnalysis) {
+    const previewNowMs = performance.now();
+    if (this.previewWorkBudget.coverageDue(previewNowMs, this.observedCenter, this.currentRadii, this.coverageDirty || !this.coverageAnalysis)) {
       this.coverageAnalysis = analyseProjectionCoverage(
         this.projectionRig,
         this.observedCenter,
         this.currentRadii,
       );
       this.coverageDirty = false;
+      this.container.dataset.coverageUpdates = String(++this.coverageUpdateCount);
+      this.container.dataset.coverageUpdatedAtMs = previewNowMs.toFixed(1);
       this.container.dataset.projectionCoverage = this.coverageAnalysis.overallPercent.toFixed(1);
       this.container.dataset.projectionCoverageStatus = this.coverageAnalysis.status;
     }
@@ -780,6 +852,14 @@ export class OrbitalScene {
         ? this.regionIntensities
         : this.disabledRegionIntensities,
     });
+    const motionWorld = snapshot.world;
+    const contentState = this.worldContentMotion.sample({
+      center: this.observedCenter, radius: Math.max(0.00001, this.currentRadii.x),
+      valid: motionWorld.stateValid && motionWorld.measurementValid && motionWorld.status === 'tracking' && motionWorld.centerM !== null,
+      source: `${motionWorld.mode}:${motionWorld.diagnostics.flags.filter(flag => /PHYSICAL_CAMERA|SIMULATED_NATIVE|REPLAY|HUATENG|UNCALIBRATED/.test(flag)).join(',')}`,
+      sequence: motionWorld.sequence, timeS: motionWorld.monotonicTimeS,
+    });
+    this.applyContentMotionUniforms(contentState, 1 / contentState.referenceRadius);
     // The registry is renderer-neutral, but its bounded controls still shape
     // the active preview until a native shader compiler is attached.
     this.surfaceMaterial.uniforms.uBrightness.value = clamp01(
@@ -836,8 +916,8 @@ export class OrbitalScene {
       this.updateCameraTour(safeDeltaS);
       if (!this.cinematicSceneControls.cameraTourEnabled && this.cameraMoveDurationS <= 0) this.controls.update();
       this.renderer.render(this.scene, this.camera);
-      if (!this.lightweightPreview) this.renderNextProjectorOutput();
     }
+    if (!this.projectorWindowRenderers.size && this.visibleProjectorPreviewIndices.size && this.previewWorkBudget.readbackDue(previewNowMs)) this.renderNextProjectorOutput();
   }
 
   public setDebugOptions(options: Partial<OrbitalDebugOptions>): void {
@@ -1141,6 +1221,18 @@ export class OrbitalScene {
   }
 
   public renderShaderThumbnail(preset: ShaderPreset, canvas: HTMLCanvasElement): void {
+    const cacheKey = `native-colour-v2:${JSON.stringify(preset)}`;
+    const cached = this.thumbnailCache.get(cacheKey);
+    if (cached) {
+      const context = canvas.getContext("2d", { alpha: false });
+      if (!context) return;
+      canvas.width = 180; canvas.height = 120;
+      context.putImageData(cached, 0, 0);
+      canvas.dataset.rendered = "true";
+      canvas.dataset.colourPipeline = 'native-srgb';
+      this.container.dataset.shaderThumbnailCacheHits = String(++this.thumbnailCacheHitCount);
+      return;
+    }
     const shader = getShaderDefinition(preset.shaderId);
     const numericValues = Object.values(preset.parameters).filter(
       (value): value is number => typeof value === "number",
@@ -1159,23 +1251,25 @@ export class OrbitalScene {
     uniforms.uWobble.value = 0.09;
     uniforms.uDeformationRate.value = 0.04;
     uniforms.uEnergy.value = 0.58;
-    uniforms.uBrightness.value = 0.7;
+    uniforms.uBrightness.value = 1;
     uniforms.uDensity.value = 0.5;
     uniforms.uFluidity.value = 0.55;
     uniforms.uOrganic.value = 0.58;
     uniforms.uMelody.value = 0.3;
     uniforms.uTrackingConfidence.value = 1;
     uniforms.uStateValid.value = 1;
-    uniforms.uPreviewExposure.value = 0.82;
+    uniforms.uPreviewExposure.value = 1;
     uniforms.uProjectionPattern.value = 0;
     uniforms.uOutputPreviewMode.value = 0;
     uniforms.uLookScale.value = 1;
     uniforms.uLookRotation.value = 0;
     uniforms.uLookHue.value = 0;
     uniforms.uLookSaturation.value = 1;
-    uniforms.uLookContrast.value = 1.12;
+    uniforms.uLookContrast.value = 1;
+    uniforms.uLookExposure.value = 0;
+    uniforms.uLookBrightness.value = 1;
     uniforms.uLookSoftness.value = 0.48;
-    uniforms.uLookLevel.value = 1.1;
+    uniforms.uLookLevel.value = 1;
     uniforms.uLowerBulge.value = 0.5;
     uniforms.uAsymmetry.value = 0.5;
     (uniforms.uRegionIntensities.value as Float32Array).fill(0);
@@ -1186,6 +1280,7 @@ export class OrbitalScene {
     this.renderer.setClearColor(0x020506, 1);
     this.renderer.render(this.thumbnailScene, this.thumbnailCamera);
     this.renderer.readRenderTargetPixels(this.thumbnailTarget, 0, 0, 180, 120, this.thumbnailPixels);
+    this.container.dataset.shaderThumbnailReadbacks = String(++this.thumbnailReadbackCount);
     this.renderer.setRenderTarget(previousTarget);
     this.renderer.setClearColor(previousClearColour, previousClearAlpha);
     const context = canvas.getContext("2d", { alpha: false });
@@ -1198,7 +1293,9 @@ export class OrbitalScene {
       image.data.set(this.thumbnailPixels.subarray(source, source + 180 * 4), y * 180 * 4);
     }
     context.putImageData(image, 0, 0);
+    this.thumbnailCache.set(cacheKey, image);
     canvas.dataset.rendered = "true";
+    canvas.dataset.colourPipeline = 'native-srgb';
   }
 
   public setEnvironmentControls(
@@ -1436,11 +1533,14 @@ export class OrbitalScene {
         powerPreference: "high-performance",
       });
       outputRenderer.outputColorSpace = THREE.SRGBColorSpace;
-      outputRenderer.toneMapping = THREE.ACESFilmicToneMapping;
-      outputRenderer.toneMappingExposure = 1.08;
+      // Projector artwork owns its native colour/exposure in the shader.
+      // Filmic tone mapping remains on the room renderer only.
+      outputRenderer.toneMapping = THREE.NoToneMapping;
+      outputRenderer.toneMappingExposure = 1;
       outputRenderer.shadowMap.enabled = false;
       outputRenderer.setPixelRatio(1);
       this.projectorWindowRenderers.set(canvas, outputRenderer);
+      this.syncProjectorPreviewPauseState();
     }
 
     const renderWidth = Math.max(1, Math.round(width));
@@ -1458,7 +1558,9 @@ export class OrbitalScene {
       outputRenderer.setClearColor(0x000000, 1);
       outputRenderer.clear(true, true, true);
       let blocked = this.outputBlockReason(index);
-      const structured = index === 0 && mode === "post" && !!this.structuredLight?.active;
+      const approximate = !!this.approximateBallMapping && index === 0 && !this.outputBlackout && !this.probeDark;
+      const fullFrameTest = this.fullFrameArtworkTest && index === 0 && !this.outputBlackout && !this.probeDark;
+      const structured = !approximate && !fullFrameTest && index === 0 && mode === "post" && !!this.structuredLight?.active;
       let scanEllipse = !blocked && structured ? this.structuredLight!.ellipse() : null;
       if (!blocked && structured && !scanEllipse) blocked = "STRUCTURED_LIGHT_NO_ELLIPSE";
       if (structured && this.probeDark) {
@@ -1472,10 +1574,44 @@ export class OrbitalScene {
         canvas.dataset.outputHeld = held.held ? "true" : "false";
         this.projectedEdgeNote = scanEllipse ? ellipseEdgeNote(scanEllipse, renderWidth, renderHeight) : null;
       }
+      if (structured && (blocked || canvas.dataset.outputHeld === "true")) this.scanContentMotion.invalidate();
+      const illumination = trackingLightAllowed(this.projectorTrackingLight.enabled, this.outputBlackout,
+        this.outputWorld, this.probeDark, index, mode === "post") && definition.enabled;
+      const light = illumination ? trackingLightLinear(this.projectorTrackingLight.level) : 0;
+      this.surfaceMaterial.uniforms.uTrackingFill.value = light;
+      if (illumination) {
+        outputRenderer.setClearColor(new THREE.Color().setRGB(light, light, light), 1);
+        outputRenderer.clear(true, true, true);
+      }
+      canvas.dataset.trackingLight = illumination ? (blocked ? "recovery" : "artwork-and-light") : "off";
+      canvas.dataset.trackingLightLevel = String(illumination ? this.projectorTrackingLight.level : 0);
       canvas.dataset.outputBlockReason = blocked ?? "";
       canvas.dataset.outputCalibration = this.structuredLight?.active && index === 0 ? "structured-light" : "measured";
-      if (scanEllipse) {
-        this.renderStructuredLightOutput(outputRenderer, scanEllipse, renderWidth, renderHeight);
+      if (approximate) {
+        canvas.dataset.outputCalibration = "estimated-balloon-mapping";
+        const ellipse=this.approximateBallMapping!();
+        canvas.dataset.outputPrediction = ellipse?.phase ?? "expired";
+        canvas.dataset.outputSilhouette = ellipse?.outlinePx?.length===64 ? (ellipse.outlineHeld ? "held-64-point-edge" : "64-point-balloon-edge") : "ellipse-fallback";
+        if (ellipse) {
+          const uniforms=this.surfaceMaterial.uniforms;
+          const confidence=uniforms.uTrackingConfidence.value,valid=uniforms.uStateValid.value;
+          uniforms.uTrackingConfidence.value=1;uniforms.uStateValid.value=1;uniforms.uFullFrameArtworkTest.value=1;uniforms.uEstimatedOpacity.value=ellipse.opacity ?? 1;
+          try { this.renderStructuredLightOutput(outputRenderer,ellipse,renderWidth,renderHeight,false); }
+          finally { uniforms.uTrackingConfidence.value=confidence;uniforms.uStateValid.value=valid;uniforms.uFullFrameArtworkTest.value=0;uniforms.uEstimatedOpacity.value=1; }
+        } else { canvas.dataset.outputBlockReason="ESTIMATED_TRACKING_EXPIRED"; }
+      } else if (fullFrameTest) {
+        canvas.dataset.outputCalibration = "unmapped-artwork-test";
+        canvas.dataset.trackingLight = "off";
+        const uniforms = this.surfaceMaterial.uniforms;
+        const confidence = uniforms.uTrackingConfidence.value, valid = uniforms.uStateValid.value;
+        uniforms.uTrackingConfidence.value = 1; uniforms.uStateValid.value = 1;
+        uniforms.uFullFrameArtworkTest.value = 1;
+        const diameter = Math.hypot(renderWidth, renderHeight) * 1.03;
+        try {
+          this.renderStructuredLightOutput(outputRenderer, { centerPx: [renderWidth/2, renderHeight/2], majorPx: diameter, minorPx: diameter, angleDeg: 0 }, renderWidth, renderHeight, false);
+        } finally { uniforms.uTrackingConfidence.value = confidence; uniforms.uStateValid.value = valid; uniforms.uFullFrameArtworkTest.value = 0; }
+      } else if (scanEllipse) {
+        this.renderStructuredLightOutput(outputRenderer, scanEllipse, renderWidth, renderHeight, canvas.dataset.outputHeld !== "true");
       } else if (!blocked) {
         const aspect = outputCamera.aspect;
         const viewportWidth = Math.min(renderWidth, renderHeight * aspect);
@@ -1485,6 +1621,7 @@ export class OrbitalScene {
         outputRenderer.setViewport(0, 0, renderWidth, renderHeight);
       }
       canvas.dataset.renderSource = "direct-webgl";
+      canvas.dataset.colourPipeline = 'native-srgb';
       canvas.dataset.renderWidth = String(renderWidth);
       canvas.dataset.renderHeight = String(renderHeight);
       canvas.dataset.renderProjector = String(index + 1);
@@ -1498,6 +1635,7 @@ export class OrbitalScene {
     } finally {
       outputCamera.aspect = previousAspect;
       outputCamera.updateProjectionMatrix();
+      this.surfaceMaterial.uniforms.uTrackingFill.value = 0;
       restoreSurfaceState();
     }
   }
@@ -1507,11 +1645,31 @@ export class OrbitalScene {
    * an orthographic camera in projector pixels, sphere squashed along the
    * ellipse axes, no projector warp (the homography already maps to raster).
    */
-  private renderStructuredLightOutput(renderer: THREE.WebGLRenderer, ellipse: ImageEllipse, width: number, height: number): void {
+  private renderStructuredLightOutput(renderer: THREE.WebGLRenderer, ellipse: ImageEllipse, width: number, height: number, validMotion = true): void {
     const radius = this.testRigSetup ? this.testRigSetup.ballDiameterM / 2 : 0.25;
     const framing = orthoFramingForEllipse(ellipse, width, height, radius);
+    const shapeUniforms=this.surfaceMaterial.uniforms;
+    if(ellipse.outlinePx?.length===64) {
+      const data=this.silhouetteTexture.image.data as Float32Array;
+      data.set(silhouetteRadii(ellipse.outlinePx,ellipse.centerPx));
+      this.silhouetteTexture.needsUpdate=true;
+      shapeUniforms.uSilhouetteRadii.value=this.silhouetteTexture;
+      (shapeUniforms.uSilhouetteCenter.value as THREE.Vector2).set(ellipse.centerPx[0],height-ellipse.centerPx[1]);
+      shapeUniforms.uSilhouetteEnabled.value=1;
+    } else shapeUniforms.uSilhouetteEnabled.value=0;
     const uniforms = this.surfaceMaterial.uniforms;
     const radii = uniforms.uRadii.value as THREE.Vector3;
+    const previousContent = {
+      enabled: uniforms.uContentMotionEnabled?.value,
+      scale: uniforms.uContentMotionScale?.value,
+      offset: (uniforms.uContentMotionOffset?.value as THREE.Vector3 | undefined)?.clone(),
+    };
+    const scanMotion = this.scanContentMotion.sample({
+      center: { x: ellipse.centerPx[0], y: -ellipse.centerPx[1], z: 0 }, radius: ellipse.majorPx / 2,
+      valid: validMotion, source: `structured-light:${width}x${height}`, sequence: this.outputWorld?.sequence ?? 0,
+      timeS: this.outputWorld?.monotonicTimeS ?? performance.now() / 1000,
+    });
+    this.applyContentMotionUniforms(scanMotion, ellipse.majorPx / (2 * radius * scanMotion.referenceRadius));
     const previous = { radii: radii.clone(), angle: Number(uniforms.uShapeAngle.value), mode: Number(uniforms.uOutputPreviewMode.value), wobble: Number(uniforms.uWobble.value), rate: Number(uniforms.uDeformationRate.value), warp: (uniforms.uOutputWarp.value as THREE.Matrix4).clone() };
     const centre = this.projectorOutputSphere.position;
     const cam = this.structuredLightCamera;
@@ -1529,6 +1687,12 @@ export class OrbitalScene {
       renderer.setViewport(0, 0, width, height);
       renderer.render(this.projectorOutputScene, cam);
     } finally {
+      if (uniforms.uContentMotionEnabled && previousContent.offset) {
+        uniforms.uContentMotionEnabled.value = previousContent.enabled;
+        uniforms.uContentMotionScale.value = previousContent.scale;
+        (uniforms.uContentMotionOffset.value as THREE.Vector3).copy(previousContent.offset);
+      }
+      uniforms.uSilhouetteEnabled.value=0;
       radii.copy(previous.radii); uniforms.uShapeAngle.value = previous.angle; uniforms.uOutputPreviewMode.value = previous.mode;
       uniforms.uWobble.value = previous.wobble; uniforms.uDeformationRate.value = previous.rate;
       (uniforms.uOutputWarp.value as THREE.Matrix4).copy(previous.warp);
@@ -1541,6 +1705,7 @@ export class OrbitalScene {
     outputRenderer.renderLists.dispose();
     outputRenderer.dispose();
     this.projectorWindowRenderers.delete(canvas);
+    this.syncProjectorPreviewPauseState();
   }
 
   public dispose(): void {
@@ -1548,6 +1713,7 @@ export class OrbitalScene {
       return;
     }
     this.disposed = true;
+    this.thumbnailCache.clear();
     this.resizeObserver?.disconnect();
     this.controls.dispose();
 
@@ -1583,6 +1749,7 @@ export class OrbitalScene {
     this.projectorWindowRenderers.clear();
 
     this.renderer.renderLists.dispose();
+    this.silhouetteTexture.dispose();
     this.projectorOutputTarget.dispose();
     this.thumbnailTarget.dispose();
     this.renderer.dispose();
@@ -2391,6 +2558,7 @@ export class OrbitalScene {
   }
 
   private renderNextProjectorOutput(): void {
+    if (this.projectorWindowRenderers.size > 0) return;
     if (this.projectorOutputCanvases.length === 0 || this.projectorOutputCameras.length === 0) return;
     const count = Math.min(
       this.projectorOutputCanvases.length,
@@ -2401,6 +2569,7 @@ export class OrbitalScene {
     let index = -1;
     for (let attempt = 0; attempt < count; attempt += 1) {
       const candidate = (this.nextProjectorOutputIndex + attempt) % count;
+      if (!this.visibleProjectorPreviewIndices.has(candidate)) continue;
       if (this.projectionRig.projectors[candidate]?.enabled !== false) { index = candidate; break; }
       const disabledCanvas = this.projectorOutputCanvases[candidate];
       if (disabledCanvas && disabledCanvas.dataset.outputBlockReason !== "PROJECTOR_DISABLED") {
@@ -2421,6 +2590,7 @@ export class OrbitalScene {
     canvas.dataset.outputBlockReason = blocked ?? "";
     if (blocked) {
       context.fillStyle = "#000"; context.fillRect(0, 0, canvas.width, canvas.height);
+      canvas.dataset.previewState = 'blocked';
       this.nextProjectorOutputIndex = (index + 1) % this.projectorOutputCameras.length;
       this.onProjectorOutputFrame?.(index);
       return;
@@ -2447,6 +2617,8 @@ export class OrbitalScene {
       PROJECTOR_OUTPUT_HEIGHT,
       this.projectorOutputPixels,
     );
+    this.container.dataset.mappingPreviewReadbacks = String(++this.mappingReadbackCount);
+    this.container.dataset.mappingPreviewReadbackAtMs = performance.now().toFixed(1);
     this.renderer.setRenderTarget(null);
     this.renderer.setViewport(previousViewport);
     this.renderer.setClearColor(previousClearColour, previousClearAlpha);
@@ -2462,6 +2634,7 @@ export class OrbitalScene {
     }
     context.putImageData(this.projectorOutputImage, 0, 0);
     canvas.dataset.frameSource = "three-render-target";
+    canvas.dataset.previewState = 'diagnostic';
     canvas.dataset.frameProjector = String(index + 1);
     canvas.dataset.frameMode = mode === 1 ? "pre-mapping" : "post-mapping";
     canvas.dataset.frameShader = this.activeShaderId;

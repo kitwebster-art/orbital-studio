@@ -7,6 +7,8 @@ import type { Vec3 } from './contracts';
 import type { StructuredLightResult } from './structuredLight';
 
 export interface ImageEllipse {
+  outlinePx?: [number, number][];
+  outlineHeld?: boolean;
   /** Centre in pixels, image coordinates (x right, y down). */
   centerPx: [number, number];
   /** Full diameters in pixels. */

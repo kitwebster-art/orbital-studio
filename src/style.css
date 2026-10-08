@@ -629,8 +629,8 @@ summary:focus-visible {
 .studio-header {
   min-height: 62px;
   padding: 10px 16px;
-  display: grid;
-  grid-template-columns: minmax(150px, 0.7fr) auto minmax(230px, 0.8fr) minmax(390px, 1fr) auto;
+  display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 18px;
   border-bottom: 1px solid var(--line);
@@ -698,6 +698,10 @@ summary:focus-visible {
 .transport {
   justify-self: end;
   display: flex;
+  flex: 1 1 420px;
+  min-width: 0;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   align-items: center;
   gap: 7px;
 }
@@ -708,6 +712,8 @@ summary:focus-visible {
   padding: 0 11px;
   border-radius: 4px;
   font-size: 11px;
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .transport-primary {
@@ -730,6 +736,7 @@ summary:focus-visible {
   border: 1px solid rgba(100, 229, 201, 0.22);
   border-radius: 5px;
   background: rgba(7, 16, 15, 0.88);
+  flex: 0 0 auto;
 }
 
 .quick-rig label {
@@ -3101,6 +3108,8 @@ summary:focus-visible {
 
   .transport {
     flex-wrap: wrap;
+    flex-basis: auto;
+    justify-content: flex-start;
   }
 
   .studio-main {
@@ -3427,3 +3436,50 @@ summary:focus-visible {
 .fit-pad [data-fit="reset"] { font-size: 10.5px; letter-spacing: .1em; text-transform: uppercase; padding: 0 10px; }
 .fit-pad-auto { display: inline-flex; align-items: center; gap: 6px; font: 600 10.5px/1 "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace; letter-spacing: .1em; text-transform: uppercase; color: rgba(210, 255, 245, .8); }
 .fit-pad-auto input { accent-color: #4dffd2; }
+
+.content-motion-panel select { width:100%; }
+.tonight-look-buttons { display:grid; grid-template-columns:1fr 1fr; gap:6px; margin:12px 0; }
+.tonight-look-buttons button { padding:10px 8px; text-align:left; color:#cef9ee; background:#17312b; border:1px solid #386155; border-radius:5px; }
+.tonight-look-buttons button:last-child { grid-column:1 / -1; }
+.content-motion-panel .editor-field { margin:10px 0; }
+
+.tonight-view-buttons { display:flex; gap:6px; margin:8px 0; }
+.tonight-view-buttons button { flex:1; padding:8px; white-space:normal; }
+/* Keep the bench and new look controls reachable on laptop-width screens. */
+.studio-shell, .studio-main, .studio-header, .control-column { min-width: 0; }
+.tonight-look-buttons { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.tonight-look-buttons button { min-width: 0; white-space: normal; }
+
+/* Keep projection look editing close to the selected composition. */
+.shader-look-controls [data-interior-grid-control][hidden] { display: none !important; }
+#close-projector-windows[hidden] { display: none !important; }
+.shader-active-look { margin-bottom: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 5px; background: rgba(125,244,212,.025); }
+.shader-active-look-heading { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.shader-active-look-heading > div { min-width: 0; display: grid; gap: 4px; }
+.shader-active-look-heading span, .shader-shortlist-heading { color: var(--quiet); font-size: 8px; letter-spacing: .08em; }
+.shader-active-look-heading strong { color: var(--cyan); font-size: 12px; overflow-wrap: anywhere; }
+.shader-active-look-heading button { padding: 7px 8px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); background: var(--surface); font-size: 9px; }
+.shader-active-look-heading button[aria-pressed="true"] { border-color: var(--cyan); color: var(--cyan); }
+.shader-shortlist-heading { display: flex; justify-content: space-between; gap: 8px; margin: 12px 0 6px; }
+.shader-shortlist { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 5px; max-height: 150px; overflow-y: auto; }
+.shader-shortlist button { min-width: 0; display: grid; gap: 3px; padding: 8px; border: 1px solid var(--line); border-radius: 4px; text-align: left; color: var(--muted); background: var(--surface); }
+.shader-shortlist button[aria-pressed="true"] { border-color: var(--cyan); color: var(--cyan); }
+.shader-shortlist button strong { font-size: 10px; overflow-wrap: anywhere; }
+.shader-shortlist button small { font-size: 8px; color: var(--quiet); }
+.shader-shortlist-empty { grid-column: 1 / -1; margin: 0; font-size: 10px; line-height: 1.5; color: var(--muted); }
+.creative-recipe-buttons { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; margin: 10px 0; }
+.creative-recipe-buttons button { display: grid; gap: 4px; min-width: 0; padding: 10px 8px; text-align: left; color: #cef9ee; background: #17312b; border: 1px solid #386155; border-radius: 5px; }
+.creative-recipe-buttons button strong { font-size: 11px; overflow-wrap: anywhere; }
+.creative-recipe-buttons button small { font-size: 9px; line-height: 1.35; color: var(--muted); }
+.creative-recipe-buttons button:hover { border-color: var(--cyan); }
+.iridescent-line-buttons button:last-child { grid-column: 1 / -1; }
+.content-motion-details, .tonight-look-details { margin: 8px 0; border-top: 1px solid var(--line); }
+.content-motion-details summary, .tonight-look-details summary { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 6px; padding: 10px 0; cursor: pointer; color: var(--muted); font-size: 10px; }
+.content-motion-details summary::before, .tonight-look-details summary::before { content: "+"; color: var(--cyan); }
+.content-motion-details[open] summary::before, .tonight-look-details[open] summary::before { content: "−"; }
+@media (min-width: 821px) and (max-width: 1450px) {
+  .studio-header { display: flex; flex-wrap: wrap; gap: 8px 12px; }
+  .studio-header .transport { min-width: 0; flex-wrap: wrap; }
+  .studio-header .quick-rig { min-width: 150px; flex: 0 1 220px; }
+  .studio-header .test-output-bar { margin-left: auto; }
+}

@@ -5,6 +5,8 @@ export interface CameraControlReply {
   error?: string;
   status: { source: string; running: boolean; settings: Record<string, unknown>; device: unknown; capabilities: Record<string, unknown> };
   devices?: unknown[];
+  registration?: import("../core/sphereRegistration").SphereRegistration;
+  marker?: {camera_px?: [number,number];peak_contrast?:number;area_px?:number;ball_center_px?:[number,number];radius_px?:number};
   /** Bridge monotonic clock at reply time (clock and brightness-trace actions). */
   server_monotonic_ns?: number;
   /** Ball centre brightness per frame: [host receive time ns, level] (brightness-trace action). */

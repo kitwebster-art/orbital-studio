@@ -1,3 +1,5 @@
+import { parseTestRigSetup, type TestRigSetup } from './testRig';
+import { parseTestProfile, type TestProfile } from './testSession';
 /**
  * Quick start for the physical test bench: the settings and checks behind the
  * two buttons (Scan, Go live). Pure, so the decisions can be tested
@@ -39,6 +41,7 @@ export function nextScanExposure(currentUs: number, levels: PreviewLevels, previ
 export const BALL_SIZE_OPTIONS: ReadonlyArray<{ label: string; diameterM: number | null }> = Object.freeze([
   { label: '50 cm ball', diameterM: 0.5 },
   { label: '1 m ball', diameterM: 1 },
+  { label: '2 m balloon', diameterM: 2 },
   { label: '3 m ball', diameterM: 3 },
   { label: 'Not sure', diameterM: null },
 ]);
@@ -67,4 +70,16 @@ export function cameraSettingsMatch(settings: Record<string, unknown> | undefine
   const exposure = Number(settings.exposure_us);
   const fps = Number(settings.fps);
   return Math.abs(exposure - wanted.exposureUs) < 1 && Math.abs(fps - wanted.fps) < 0.5;
+}
+
+/** A venue preparation preset, never a measured layout or a hardware command. */
+export function prepare4ATonightProfile(current: TestProfile): { profile: TestProfile; proposedRig: TestRigSetup; layoutNeedsReview: boolean } {
+  const previous = parseTestProfile(current);
+  const proposedRig = { ...structuredClone(previous.rig), ballDiameterM: 2 };
+  let layoutNeedsReview = false;
+  try { parseTestRigSetup(proposedRig); } catch { layoutNeedsReview = true; }
+  const context = '4A Fitzroy, 7 October 2026. Approximately 2 m balloon: measure the inflated diameter. Camera position changed; larger fan. Recheck the full camera view and projector alignment, then run a fresh stationary scan. Existing lens positions and hardware settings are retained as unverified starting values. Fan speed is physical equipment control, not controlled by this app.';
+  const notes = previous.notes.includes('4A Fitzroy, 7 October 2026.') ? previous.notes : [previous.notes, context].filter(Boolean).join('\n\n');
+  const profile = parseTestProfile({ ...previous, name: '4A Fitzroy / tonight / 2 m balloon', notes, rig: layoutNeedsReview ? previous.rig : proposedRig });
+  return { profile, proposedRig, layoutNeedsReview };
 }

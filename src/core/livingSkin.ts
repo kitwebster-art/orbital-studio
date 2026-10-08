@@ -29,8 +29,9 @@ export const DEFAULT_LIVING_SKIN_CONTROLS: Readonly<LivingSkinControls> =
     attackSharpness: 0.72,
     breath: 0.66,
     edgeSoftness: 0.42,
-    beautyLighting: 0.72,
-    glow: 0.38,
+    // Native projection colour starts without simulated surface lighting.
+    beautyLighting: 0,
+    glow: 0,
     bpm: 112,
     phraseEvolution: 0.82,
   });

@@ -1,4 +1,7 @@
 import * as THREE from "three";
+import { INTERIOR_LOOKS_GLSL } from "./interiorLooks";
+import { SQUIGGLE_LOOKS_GLSL } from "./squiggleLooks";
+import { PROJECTION_COLOUR_GLSL } from "./projectionColour";
 import type { ProjectorShaderInput, ProjectionPattern } from "../../core/projectionRig";
 import {
   DEFAULT_SHADER_LOOK_CONTROLS,
@@ -46,6 +49,7 @@ export const ORBITAL_SURFACE_VERTEX_SHADER = /* glsl */ `
 
   varying vec3 vWorldPosition;
   varying vec3 vSurfaceDirection;
+  varying vec3 vContentLocalPosition;
   varying vec3 vWorldNormal;
   varying float vDeformation;
 
@@ -82,6 +86,7 @@ export const ORBITAL_SURFACE_VERTEX_SHADER = /* glsl */ `
       (broadBulge * 0.68 + secondaryBulge * 0.2 + asymmetricLobe * (0.04 + uLowerBulge * 0.14)) *
       uWobble * meanRadius * 0.13;
     vec3 deformed = shaped + direction * deformation;
+    vContentLocalPosition = deformed;
 
     vec3 alignedNormal = normalize(alignedDirection / max(uRadii, vec3(0.01)));
     alignedNormal.xy = rotate2d(uShapeAngle) * alignedNormal.xy;
@@ -107,6 +112,12 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
 
   uniform float uTime;
   uniform float uEnergy;
+  uniform float uEstimatedOpacity;
+  uniform float uSilhouetteEnabled;
+  uniform vec2 uSilhouetteCenter;
+  uniform sampler2D uSilhouetteRadii;
+  uniform float uFullFrameArtworkTest;
+  uniform float uTrackingFill;
   uniform float uBrightness;
   uniform float uDensity;
   uniform float uFluidity;
@@ -119,6 +130,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
   uniform float uTrackingConfidence;
   uniform float uStateValid;
   uniform float uPreviewExposure;
+  uniform float uAngularPixelSpan;
   uniform vec3 uProjectorPositions[5];
   uniform vec3 uProjectorDirections[5];
   uniform vec3 uProjectorRights[5];
@@ -132,6 +144,10 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
   uniform float uProjectorBlendGamma[5];
   uniform float uProjectorBlackLevels[5];
   uniform float uProjectorEnabled[5];
+  uniform vec3 uRadii;
+  uniform float uContentMotionEnabled;
+  uniform float uContentMotionScale;
+  uniform vec3 uContentMotionOffset;
   uniform float uOutputPreviewMode;
   uniform float uOutputPreviewProjector;
   uniform float uProjectionPattern;
@@ -147,6 +163,11 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
   uniform float uLookHue;
   uniform float uLookSaturation;
   uniform float uLookContrast;
+  uniform float uLookExposure;
+  uniform float uLookBrightness;
+  uniform float uLookShellGrid;
+  uniform float uLookShellGridDensity;
+  uniform float uLookShellGridWidth;
   uniform float uLookSoftness;
   uniform float uLookLevel;
   uniform float uMaterialReflectance;
@@ -174,6 +195,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
 
   varying vec3 vWorldPosition;
   varying vec3 vSurfaceDirection;
+  varying vec3 vContentLocalPosition;
   varying vec3 vWorldNormal;
   varying float vDeformation;
 
@@ -331,9 +353,13 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
     vec3 shifted = rotateHue(colour, uLookHue);
     float luminance = dot(shifted, vec3(0.2126, 0.7152, 0.0722));
     shifted = mix(vec3(luminance), shifted, uLookSaturation);
-    shifted = (shifted - vec3(0.18)) * uLookContrast + vec3(0.18);
+    // Power contrast around middle grey preserves exact black at every setting.
+    // Contrast=1 is an identity, including existing HDR colours above one.
+    shifted = vec3(0.18) * pow(max(shifted, vec3(0.0)) / 0.18, vec3(uLookContrast));
     return max(shifted, vec3(0.0)) * uLookLevel;
   }
+
+  ${PROJECTION_COLOUR_GLSL}
 
   float digitalRainPlane(
     vec2 p,
@@ -355,6 +381,36 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
     return glyph * trail;
   }
 
+  // Geometry-locked shell: never use the translated/rotated contentPoint here.
+  // Great-circle planes form meridians; equally spaced polar angles form parallels.
+  // This avoids a UV seam and keeps the grid independent of the interior animation.
+  float outerShellGrid(vec3 geometryDirection) {
+    vec3 shell = normalize(geometryDirection);
+    float halfCount = max(3.0, floor(uLookShellGridDensity * 0.5 + 0.5));
+    float width = max(uLookShellGridWidth, 0.0001);
+    float grid = 0.0;
+    for (int line = 0; line < 20; line++) {
+      float index = float(line);
+      if (index < halfCount) {
+        float angle = index * PI / halfCount;
+        float meridianDistance = dot(shell.xz, vec2(cos(angle), sin(angle)));
+        float meridianAA = max(fwidth(meridianDistance), 0.0005);
+        grid = max(grid, 1.0 - smoothstep(width, width + meridianAA, abs(meridianDistance)));
+      }
+      if (index > 0.0 && index < halfCount) {
+        float polarAngle = index * PI / halfCount;
+        float parallelDistance = (shell.y - cos(polarAngle)) / max(sin(polarAngle), 0.05);
+        float parallelAA = max(fwidth(parallelDistance), 0.0005);
+        grid = max(grid, 1.0 - smoothstep(width, width + parallelAA, abs(parallelDistance)));
+      }
+    }
+    return grid;
+  }
+
+  ${INTERIOR_LOOKS_GLSL}
+
+  ${SQUIGGLE_LOOKS_GLSL}
+
   vec4 evaluateShader(
     float mode,
     vec3 p,
@@ -367,10 +423,20 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
     float controlE,
     float residualFault
   ) {
-    vec3 deepCyan = vec3(0.02, 0.43, 0.62);
-    vec3 mineralBlue = vec3(0.10, 0.18, 0.58);
-    vec3 warmLumen = vec3(1.0, 0.54, 0.26);
-    vec3 pearl = vec3(0.76, 0.92, 1.0);
+    // New looks bypass the generic multi-octave noise work entirely.
+    if (mode > 47.5 && mode < 50.5) {
+      return squiggleField(mode, p, time, seed, controlA, controlB, controlC, controlD, controlE);
+    }
+    if (mode > 42.5 && mode < 47.5) {
+      if (mode < 43.5) return paintImpacts(p, time, seed, controlA, controlB, controlC, controlD, controlE);
+      return imaginaryInterior(mode, p, time, seed, controlA, controlB, controlC, controlD, controlE);
+    }
+    // Native palette peaks carry vivid pigment. Coverage and scalar shading
+    // remain independent; no per-pixel peak normalisation flattens the field.
+    vec3 deepCyan = vec3(0.015, 0.72, 1.0);
+    vec3 mineralBlue = vec3(0.055, 0.16, 1.0);
+    vec3 warmLumen = vec3(1.0, 0.28, 0.035);
+    vec3 brightCyan = vec3(0.06, 0.88, 1.0);
     vec3 darkBody = vec3(0.0025, 0.0032, 0.0042);
 
     float scale = mix(1.8, 9.0, controlA) * uLookScale;
@@ -385,13 +451,15 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
     vec3 colour = darkBody;
 
     if (mode < 0.5) {
-      signal = smoothstep(0.28, 0.74, field) * 0.34;
-      colour = mix(darkBody, deepCyan, signal);
+      // A usable native projection texture, rather than the old dim standby
+      // membrane. Keep the field's shadows and quiet cyan identity.
+      signal = smoothstep(0.22, 0.66, field);
+      colour = mix(vec3(0.015, 0.08, 0.14), vec3(0.06, 0.82, 1.0), signal);
     } else if (mode < 1.5) {
       float contour = abs(sin((field * 1.7 + dot(p, normalize(vec3(0.37, 0.82, -0.43)))) * mix(14.0, 42.0, controlA) * PI));
       contour = pow(contour, mix(24.0, 5.0, controlB));
       signal = contour * contrast;
-      colour = mix(deepCyan, pearl, contour);
+      colour = mix(deepCyan, brightCyan, contour);
     } else if (mode < 2.5) {
       vec3 warp = vec3(
         fbm(moving + vec3(7.2, 1.4, 3.1)),
@@ -401,18 +469,18 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float membrane = fbm(moving + warp * mix(0.8, 3.2, detail));
       signal = smoothstep(0.28, 0.76, membrane) * contrast;
       colour = mix(deepCyan, mineralBlue, membrane);
-      colour = mix(colour, pearl, pow(membrane, 4.0) * accent);
+      colour = mix(colour, brightCyan, pow(membrane, 4.0) * accent);
     } else if (mode < 3.5) {
       float waveA = sin(dot(p, normalize(vec3(0.81, 0.32, -0.49))) * scale * 7.0 + field * 5.0 + time * speed);
       float waveB = sin(dot(p, normalize(vec3(-0.28, 0.91, 0.31))) * scale * 8.5 - field * 4.0 - time * speed * 0.73);
       float waveC = sin(dot(p, normalize(vec3(0.44, -0.18, 0.88))) * scale * 5.7 + time * speed * 0.41);
       float caustic = pow(clamp(1.0 - abs(waveA + waveB + waveC) / 3.0, 0.0, 1.0), mix(8.0, 1.8, detail));
       signal = smoothstep(0.28, 0.9, caustic) * contrast;
-      colour = mix(vec3(0.006, 0.055, 0.09), vec3(0.24, 0.86, 0.86), caustic);
+      colour = mix(vec3(0.006, 0.055, 0.09), vec3(0.025, 0.9, 1.0), caustic);
     } else if (mode < 4.5) {
       float smoke = smoothstep(mix(0.58, 0.24, controlC), 0.8, field);
       signal = smoke * mix(0.5, 1.0, contrast);
-      colour = mix(vec3(0.008, 0.018, 0.024), vec3(0.32, 0.45, 0.5), smoke);
+      colour = mix(vec3(0.008, 0.018, 0.024), vec3(0.16, 0.5, 1.0), smoke);
     } else if (mode < 5.5) {
       vec3 flameP = p * scale + seedOffset + vec3(0.0, -time * speed * 0.48, 0.0);
       float flame = fbm(flameP + vec3(field * 1.7));
@@ -422,7 +490,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float sparks = step(mix(0.995, 0.94, accent), sparkHash);
       signal = clamp(body * 1.25 + sparks, 0.0, 1.0) * contrast;
       colour = mix(vec3(0.3, 0.006, 0.001), vec3(1.0, 0.16, 0.012), hot);
-      colour = mix(colour, vec3(1.0, 0.84, 0.22), sparks);
+      colour = mix(colour, vec3(1.0, 0.64, 0.035), sparks);
     } else if (mode < 6.5) {
       vec3 weights = pow(abs(p), vec3(4.0));
       weights /= max(weights.x + weights.y + weights.z, 0.0001);
@@ -437,14 +505,14 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
         weights
       );
       signal = rain * max(contrast, 0.58);
-      colour = mix(vec3(0.002, 0.03, 0.008), vec3(0.22, 1.0, 0.34), rain * max(accent, 0.45));
+      colour = mix(vec3(0.002, 0.03, 0.008), vec3(0.025, 1.0, 0.18), rain * max(accent, 0.45));
     } else if (mode < 7.5) {
       float secondCell = 0.0;
       float firstCell = cellular3(moving * 0.82, secondCell);
       float borderDistance = secondCell - firstCell;
       float cracks = 1.0 - smoothstep(0.02, mix(0.08, 0.2, detail), borderDistance);
       signal = max(residualFault, cracks * contrast);
-      colour = mix(warmLumen, pearl, cracks * 0.72);
+      colour = mix(warmLumen, brightCyan, cracks * 0.72);
     } else if (mode < 8.5) {
       float secondParticle = 0.0;
       float particleDistance = cellular3(moving * mix(1.2, 2.8, detail), secondParticle);
@@ -455,13 +523,13 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
     } else if (mode < 9.5) {
       float grid = seamlessGrid(p + vec3(time * speed * 0.006), mix(6.0, 24.0, controlA) * uLookScale, mix(0.012, 0.095, controlB));
       signal = grid * contrast;
-      colour = mix(deepCyan, pearl, grid);
+      colour = mix(deepCyan, brightCyan, grid);
     } else if (mode < 10.5) {
       float atmosphere = smoothstep(0.04, 0.86, 1.0 - abs(p.y));
       float cloud = smoothstep(0.24, 0.8, field);
       float storm = fbm(moving * 0.58 + vec3(field * 2.0));
       signal = clamp(atmosphere * (0.32 + cloud * 0.48 + storm * 0.24) * contrast, 0.0, 1.0);
-      colour = mix(mineralBlue, pearl, atmosphere * 0.68 + cloud * 0.28);
+      colour = mix(mineralBlue, brightCyan, atmosphere * 0.68 + cloud * 0.28);
     } else if (mode < 11.5) {
       float residualBands = abs(sin((dot(p, normalize(vec3(0.72, -0.41, 0.56))) * mix(18.0, 48.0, controlA) + field * 2.0 + time * speed) * PI));
       residualBands = pow(residualBands, mix(18.0, 4.0, detail));
@@ -478,13 +546,13 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float wire = max(max(circleA, circleB), max(circleC, circleD));
       wire = max(wire, subdivision * 0.72);
       signal = wire * max(contrast, 0.6);
-      colour = mix(vec3(0.008, 0.12, 0.16), vec3(0.68, 1.0, 0.9), wire);
+      colour = mix(vec3(0.008, 0.12, 0.16), vec3(0.035, 1.0, 0.64), wire);
     } else if (mode < 13.5) {
       vec3 warpedP = p + (vec3(field) - 0.5) * controlD * 0.2;
       float hex = seamlessHex(warpedP + vec3(time * speed * 0.01), mix(3.0, 11.0, controlA) * uLookScale);
       float fill = smoothstep(0.52, 0.82, fbm(moving * 0.62)) * accent;
       signal = clamp(hex * max(contrast, 0.62) + fill * 0.28, 0.0, 1.0);
-      colour = mix(vec3(0.015, 0.12, 0.15), vec3(0.68, 0.96, 1.0), hex);
+      colour = mix(vec3(0.015, 0.12, 0.15), vec3(0.035, 0.82, 1.0), hex);
     } else if (mode < 14.5) {
       vec3 warp = vec3(
         fbm(moving + vec3(8.0, 1.0, 3.0)),
@@ -504,7 +572,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float molten = smoothstep(0.26, 0.76, field) * cracks;
       signal = clamp(cracks * mix(0.54, 1.0, detail) + molten * 0.48, 0.0, 1.0) * contrast;
       colour = mix(vec3(0.018, 0.006, 0.003), vec3(1.0, 0.08, 0.004), cracks);
-      colour = mix(colour, vec3(1.0, 0.72, 0.08), molten * controlD);
+      colour = mix(colour, vec3(1.0, 0.54, 0.025), molten * controlD);
     } else if (mode < 16.5) {
       float activator = fbm(moving + vec3(field * mix(0.8, 3.0, accent)));
       float inhibitor = fbm(moving * mix(1.35, 2.2, detail) - vec3(field * 1.4));
@@ -512,7 +580,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float target = mix(0.06, 0.34, controlC);
       float cells = 1.0 - smoothstep(mix(0.018, 0.09, detail), mix(0.08, 0.2, detail), abs(reaction - target));
       signal = cells * contrast;
-      colour = mix(vec3(0.008, 0.04, 0.035), vec3(0.64, 0.98, 0.74), cells);
+      colour = mix(vec3(0.008, 0.04, 0.035), vec3(0.09, 1.0, 0.38), cells);
     } else if (mode < 17.5) {
       float secondVoronoi = 0.0;
       float firstVoronoi = cellular3(moving * mix(0.8, 1.5, accent), secondVoronoi);
@@ -520,7 +588,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float border = 1.0 - smoothstep(0.018, mix(0.08, 0.22, controlC), borderDistance);
       float fill = 1.0 - smoothstep(0.1, 0.7, firstVoronoi);
       signal = clamp(border * max(contrast, 0.6) + fill * controlD * 0.35, 0.0, 1.0);
-      colour = mix(vec3(0.012, 0.07, 0.09), vec3(0.82, 0.97, 0.9), border);
+      colour = mix(vec3(0.012, 0.07, 0.09), vec3(0.055, 1.0, 0.68), border);
       colour = mix(colour, deepCyan, fill * controlD);
     } else if (mode < 18.5) {
       float warp = fbm(moving * 0.72) * mix(2.0, 8.0, detail);
@@ -528,7 +596,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float vein = 1.0 - smoothstep(mix(0.025, 0.16, controlC), mix(0.11, 0.28, controlC), abs(strata));
       float stone = smoothstep(0.2, 0.82, field);
       signal = clamp(vein * contrast + stone * 0.22, 0.0, 1.0);
-      colour = mix(vec3(0.055, 0.07, 0.08), mix(vec3(0.88, 0.76, 0.66), vec3(0.58, 0.82, 0.9), accent), vein);
+      colour = mix(vec3(0.055, 0.07, 0.08), mix(vec3(1.0, 0.52, 0.18), vec3(0.08, 0.76, 1.0), accent), vein);
     } else if (mode < 19.5) {
       float secondCrystal = 0.0;
       float firstCrystal = cellular3(moving * 0.92, secondCrystal);
@@ -536,8 +604,8 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float facet = hash31(floor(moving * 0.92));
       signal = clamp(facet * contrast * 0.58 + edge * accent, 0.0, 1.0);
       vec3 prism = spectralPalette(facet * 0.34 + controlE * 0.28);
-      colour = mix(vec3(0.025, 0.055, 0.08), mix(vec3(0.42, 0.72, 0.92), prism, controlE), facet);
-      colour = mix(colour, pearl, edge * controlD);
+      colour = mix(vec3(0.025, 0.055, 0.08), mix(vec3(0.06, 0.62, 1.0), prism, controlE), facet);
+      colour = mix(colour, brightCyan, edge * controlD);
     } else if (mode < 20.5) {
       float warp = fbm(moving * 0.62) * mix(1.0, 4.5, detail);
       float ribbonA = abs(sin((dot(p, normalize(vec3(0.24, 0.91, 0.33))) * mix(6.0, 22.0, controlA) + warp + time * speed * 0.3) * PI));
@@ -545,13 +613,18 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float ribbon = pow(max(ribbonA, ribbonB), mix(9.0, 2.4, detail));
       float atmosphere = smoothstep(-0.92, 0.88, p.y);
       signal = ribbon * atmosphere * max(contrast, 0.52);
-      colour = mix(vec3(0.015, 0.32, 0.3), vec3(0.7, 0.18, 0.92), clamp(accent + ribbon * 0.28, 0.0, 1.0));
+      colour = mix(vec3(0.015, 0.8, 0.58), vec3(0.63, 0.035, 1.0), clamp(accent + ribbon * 0.28, 0.0, 1.0));
     } else if (mode < 21.5) {
       float phase = fbm(moving * 0.7) * mix(2.0, 8.0, detail) + dot(p, normalize(vec3(0.48, 0.63, -0.61))) * scale + time * speed * 0.16;
       vec3 spectrum = spectralPalette(phase * mix(0.32, 1.2, controlC) + accent);
+      // Author full-strength interference pigment before applying band relief.
+      // A common gain preserves rainbow ratios, without adding a white sheen.
+      spectrum /= max(max(spectrum.r, spectrum.g), spectrum.b);
       float bands = 0.5 + 0.5 * sin(phase * TAU);
-      signal = mix(0.28, 1.0, bands) * contrast;
-      colour = mix(vec3(0.01, 0.025, 0.04), spectrum, mix(0.38, 0.92, controlC));
+      // Film covers the sphere brightly; stronger Bands adds gentle ripples
+      // instead of multiplying the entire surface down towards black.
+      signal = mix(1.0, mix(0.72, 1.0, bands), mix(0.28, 1.0, controlC));
+      colour = spectrum;
     } else if (mode < 22.5) {
       float filamentA = 1.0 - smoothstep(0.025, mix(0.06, 0.18, detail), abs(fbm(moving) - 0.5));
       float filamentB = 1.0 - smoothstep(0.02, mix(0.05, 0.14, detail), abs(fbm(moving * 1.73 + vec3(9.0, 2.0, 4.0)) - 0.52));
@@ -559,8 +632,8 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float spark = step(mix(0.997, 0.94, accent), hash31(floor(moving * 3.0) + floor(time * speed * 8.0)));
       float electric = max(filamentA, filamentB * detail) * pulse;
       signal = clamp(electric * max(contrast, 0.62) + spark, 0.0, 1.0);
-      colour = mix(vec3(0.04, 0.08, 0.28), vec3(0.58, 0.9, 1.0), electric);
-      colour = mix(colour, vec3(1.0, 0.72, 0.96), spark);
+      colour = mix(vec3(0.025, 0.055, 0.28), vec3(0.035, 0.64, 1.0), electric);
+      colour = mix(colour, vec3(1.0, 0.055, 0.72), spark);
     } else if (mode < 23.5) {
       vec3 vortexP = p;
       float turn = time * speed * 0.12 + (1.0 - abs(p.y)) * mix(0.4, 2.8, accent) + field * 0.8;
@@ -570,14 +643,14 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float cloud = smoothstep(mix(0.68, 0.28, controlC), 0.86, cloudA * 0.68 + cloudB * 0.42);
       float eye = smoothstep(mix(0.08, 0.6, accent), mix(0.38, 0.86, accent), length(vortexP.xz));
       signal = cloud * eye * contrast;
-      colour = mix(vec3(0.01, 0.025, 0.04), vec3(0.42, 0.58, 0.67), cloud);
+      colour = mix(vec3(0.01, 0.025, 0.04), vec3(0.16, 0.6, 1.0), cloud);
     } else if (mode < 24.5) {
       float ridgeA = 1.0 - smoothstep(0.025, mix(0.07, 0.2, detail), abs(fbm(moving) - mix(0.42, 0.58, accent)));
       float ridgeB = 1.0 - smoothstep(0.018, mix(0.05, 0.14, detail), abs(fbm(moving * 1.86 + vec3(field * 2.0)) - 0.5));
       float network = max(ridgeA, ridgeB * controlC);
       float growth = smoothstep(0.18, 0.82, fbm(moving * 0.43 + vec3(time * speed * 0.08)));
       signal = network * growth * max(contrast, 0.56);
-      colour = mix(vec3(0.006, 0.035, 0.026), vec3(0.54, 1.0, 0.72), network * max(accent, 0.3));
+      colour = mix(vec3(0.006, 0.035, 0.026), vec3(0.055, 1.0, 0.38), network * max(accent, 0.3));
     } else if (mode < 25.5) {
       float swellA = sin(dot(p, normalize(vec3(0.82, 0.26, -0.51))) * scale * 2.8 + field * 3.4 + time * speed * 0.7);
       float swellB = sin(dot(p, normalize(vec3(-0.34, 0.91, 0.23))) * scale * 2.1 - field * 2.2 - time * speed * 0.46);
@@ -586,8 +659,8 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float foamNoise = fbm(moving * 2.4 + vec3(time * speed * 0.16));
       float foam = crest * smoothstep(mix(0.76, 0.48, detail), 0.9, foamNoise);
       signal = clamp(crest * mix(0.5, 0.92, contrast) + foam * 0.7, 0.0, 1.0);
-      colour = mix(vec3(0.002, 0.025, 0.065), vec3(0.015, 0.38, 0.55), waveBody * (1.0 - accent * 0.35));
-      colour = mix(colour, vec3(0.72, 1.0, 0.96), foam);
+      colour = mix(vec3(0.002, 0.025, 0.065), vec3(0.015, 0.58, 1.0), waveBody * (1.0 - accent * 0.35));
+      colour = mix(colour, vec3(0.08, 1.0, 0.88), foam);
     } else if (mode < 26.5) {
       vec3 inkWarp = vec3(
         fbm(moving * 0.72 + vec3(7.1, 1.3, 4.2)),
@@ -599,16 +672,16 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float pigment = smoothstep(mix(0.7, 0.34, controlC), 0.86, inkA * 0.72 + inkB * 0.38);
       float bloomEdge = 1.0 - smoothstep(0.025, mix(0.08, 0.22, detail), abs(inkA - inkB));
       signal = clamp(pigment * contrast + bloomEdge * 0.22, 0.0, 1.0);
-      colour = mix(vec3(0.004, 0.008, 0.02), mix(vec3(0.03, 0.28, 0.42), vec3(0.48, 0.05, 0.5), accent), pigment);
-      colour = mix(colour, vec3(0.75, 0.42, 0.88), bloomEdge * 0.32);
+      colour = mix(vec3(0.004, 0.008, 0.02), mix(vec3(0.025, 0.66, 1.0), vec3(0.82, 0.025, 1.0), accent), pigment);
+      colour = mix(colour, vec3(0.86, 0.12, 1.0), bloomEdge * 0.32);
     } else if (mode < 27.5) {
       float radial = dot(p.xz, p.xz) + 0.16;
       float flux = p.y / radial + fbm(moving * 0.52) * mix(0.2, 1.4, detail);
       float fieldLines = pow(abs(sin((flux * mix(4.0, 14.0, controlA) + time * speed * 0.16) * PI)), mix(20.0, 4.0, detail));
       float poleGlow = pow(abs(p.y), mix(8.0, 2.2, controlC));
       signal = clamp(fieldLines * max(contrast, 0.58) + poleGlow * 0.24, 0.0, 1.0);
-      vec3 negativePole = vec3(0.08, 0.46, 0.96);
-      vec3 positivePole = vec3(1.0, 0.26, 0.12);
+      vec3 negativePole = vec3(0.025, 0.48, 1.0);
+      vec3 positivePole = vec3(1.0, 0.18, 0.025);
       colour = mix(negativePole, positivePole, smoothstep(-accent, max(accent, 0.01), p.y));
       colour = mix(vec3(0.003, 0.015, 0.028), colour, fieldLines + poleGlow * 0.3);
     } else if (mode < 28.5) {
@@ -619,7 +692,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float lineB = pow(abs(sin(phaseB)), mix(24.0, 4.0, detail));
       float moire = clamp(max(lineA, lineB) + abs(lineA - lineB) * controlD, 0.0, 1.0);
       signal = moire * max(contrast, 0.62);
-      colour = mix(vec3(0.005, 0.045, 0.07), mix(vec3(0.38, 1.0, 0.82), vec3(0.82, 0.3, 1.0), accent), lineB);
+      colour = mix(vec3(0.005, 0.045, 0.07), mix(vec3(0.025, 1.0, 0.66), vec3(0.72, 0.045, 1.0), accent), lineB);
     } else if (mode < 29.5) {
       float secondPlankton = 0.0;
       float planktonDistance = cellular3(moving * mix(1.4, 3.2, controlA), secondPlankton);
@@ -629,7 +702,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float pulse = 0.25 + 0.75 * pow(0.5 + 0.5 * sin(time * speed * 5.0 + organismSeed * TAU), mix(6.0, 1.5, detail));
       float life = organism * mix(0.25, 1.0, cluster) * pulse;
       signal = life * max(contrast, 0.62);
-      colour = mix(vec3(0.001, 0.018, 0.035), mix(vec3(0.12, 1.0, 0.72), vec3(0.2, 0.62, 1.0), organismSeed), life);
+      colour = mix(vec3(0.001, 0.018, 0.035), mix(vec3(0.025, 1.0, 0.52), vec3(0.025, 0.54, 1.0), organismSeed), life);
     } else if (mode < 30.5) {
       float secondBubble = 0.0;
       float firstBubble = cellular3(moving * mix(0.8, 1.7, controlA), secondBubble);
@@ -638,8 +711,8 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float bubbleFill = 1.0 - smoothstep(0.08, 0.66, firstBubble);
       float foamBank = smoothstep(mix(0.74, 0.3, accent), 0.86, field);
       signal = clamp(bubbleRim * max(contrast, 0.58) + bubbleFill * detail * 0.24, 0.0, 1.0) * mix(0.34, 1.0, foamBank);
-      colour = mix(vec3(0.005, 0.08, 0.11), vec3(0.82, 1.0, 0.94), bubbleRim);
-      colour = mix(colour, vec3(0.16, 0.58, 0.65), bubbleFill * detail);
+      colour = mix(vec3(0.005, 0.08, 0.11), vec3(0.055, 1.0, 0.8), bubbleRim);
+      colour = mix(colour, vec3(0.035, 0.62, 1.0), bubbleFill * detail);
     } else if (mode < 31.5) {
       float secondFrost = 0.0;
       float firstFrost = cellular3(moving * 0.9, secondFrost);
@@ -649,8 +722,8 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float frostMask = smoothstep(mix(0.72, 0.28, accent), 0.88, field);
       float frost = max(crystalEdge, max(branchA, branchB * detail)) * frostMask;
       signal = frost * max(contrast, 0.6);
-      colour = mix(vec3(0.008, 0.035, 0.07), vec3(0.72, 0.94, 1.0), frost);
-      colour = mix(colour, vec3(0.92, 0.84, 1.0), crystalEdge * controlD);
+      colour = mix(vec3(0.008, 0.035, 0.07), vec3(0.055, 0.75, 1.0), frost);
+      colour = mix(colour, vec3(0.52, 0.15, 1.0), crystalEdge * controlD);
     } else if (mode < 32.5) {
       vec3 weaveWeights = pow(abs(p), vec3(4.0));
       weaveWeights /= max(weaveWeights.x + weaveWeights.y + weaveWeights.z, 0.0001);
@@ -662,7 +735,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float weave = dot(vec3(weaveX, weaveY, weaveZ), weaveWeights);
       float fray = step(mix(0.995, 0.88, accent), hash31(floor(moving * 4.0))) * (1.0 - weave);
       signal = clamp(weave * max(contrast, 0.6) + fray * 0.48, 0.0, 1.0);
-      colour = mix(vec3(0.018, 0.045, 0.052), vec3(0.72, 0.92, 0.82), weave);
+      colour = mix(vec3(0.018, 0.045, 0.052), vec3(0.12, 1.0, 0.56), weave);
       colour = mix(colour, warmLumen, fray * 0.35);
     } else if (mode < 33.5) {
       float terrain = fbm(moving * 0.68) + fbm(moving * 1.46) * detail * 0.28;
@@ -673,7 +746,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float erosion = smoothstep(mix(0.74, 0.28, controlD), 0.88, erosionField);
       float pooled = smoothstep(0.56, 0.84, terrain) * accent;
       signal = clamp(terrainLine * mix(0.35, 1.0, erosion) * max(contrast, 0.6) + pooled * 0.18, 0.0, 1.0);
-      colour = mix(vec3(0.012, 0.06, 0.055), mix(vec3(0.62, 0.92, 0.68), vec3(0.84, 0.46, 0.2), accent), terrain);
+      colour = mix(vec3(0.012, 0.06, 0.055), mix(vec3(0.18, 1.0, 0.34), vec3(1.0, 0.42, 0.055), accent), terrain);
     } else if (mode < 34.5) {
       float nebulaA = fbm(moving * 0.46);
       float nebulaB = fbm(moving * 1.12 + vec3(nebulaA * 3.2));
@@ -683,9 +756,9 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float starSeed = hash31(floor(moving * 4.2));
       float stars = (1.0 - smoothstep(0.008, 0.055, starDistance)) * step(mix(0.998, 0.91, detail), starSeed);
       signal = clamp(nebula * max(contrast, 0.46) + stars, 0.0, 1.0);
-      vec3 nebulaColour = mix(vec3(0.08, 0.28, 0.72), vec3(0.84, 0.12, 0.72), accent);
+      vec3 nebulaColour = mix(vec3(0.055, 0.26, 1.0), vec3(1.0, 0.035, 0.68), accent);
       colour = mix(vec3(0.001, 0.003, 0.012), nebulaColour, nebula);
-      colour = mix(colour, vec3(0.92, 0.98, 1.0), stars);
+      colour = mix(colour, vec3(0.12, 0.76, 1.0), stars);
     } else if (mode < 35.5) {
       vec3 scanWeights = pow(abs(p), vec3(5.0));
       scanWeights /= max(scanWeights.x + scanWeights.y + scanWeights.z, 0.0001);
@@ -698,9 +771,9 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float scan = dot(scanLines, scanWeights);
       float tear = step(mix(0.998, 0.86, detail), hash31(floor(moving * vec3(2.0, 18.0, 2.0)) + floor(time * speed * 5.0)));
       signal = clamp(scan * max(contrast, 0.58) + tear * 0.62, 0.0, 1.0);
-      vec3 hologram = mix(vec3(0.08, 0.92, 0.86), spectralPalette(field + time * 0.04), accent);
+      vec3 hologram = mix(vec3(0.025, 1.0, 0.8), spectralPalette(field + time * 0.04), accent);
       colour = mix(vec3(0.002, 0.022, 0.035), hologram, scan);
-      colour = mix(colour, pearl, tear * 0.7);
+      colour = mix(colour, brightCyan, tear * 0.7);
     } else if (mode < 36.5) {
       float secondCoral = 0.0;
       float coralCell = cellular3(moving * 0.82, secondCoral);
@@ -709,7 +782,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float growthField = smoothstep(mix(0.7, 0.24, accent), 0.88, fbm(moving * 0.42 + vec3(time * speed * 0.08)));
       float coral = max(coralRidge, coralBranches * controlC) * growthField;
       signal = coral * max(contrast, 0.56);
-      colour = mix(vec3(0.012, 0.035, 0.028), mix(vec3(1.0, 0.32, 0.26), vec3(0.32, 0.96, 0.72), accent), coral);
+      colour = mix(vec3(0.012, 0.035, 0.028), mix(vec3(1.0, 0.24, 0.12), vec3(0.08, 1.0, 0.5), accent), coral);
     } else if (mode < 37.5) {
       vec3 tunnelAxis = normalize(vec3(0.31, 0.86, -0.4));
       float tunnelAxial = dot(p, tunnelAxis);
@@ -723,9 +796,9 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float streakSeed = hash31(floor(moving * 4.0));
       float streaks = (1.0 - smoothstep(0.01, 0.08, streakDistance)) * step(mix(0.998, 0.92, detail), streakSeed);
       signal = clamp(tunnelRing * mix(0.3, 1.0, tunnelDepth) * max(contrast, 0.52) + streaks, 0.0, 1.0);
-      vec3 tunnelColour = mix(vec3(0.08, 0.42, 1.0), vec3(0.84, 0.18, 1.0), accent);
+      vec3 tunnelColour = mix(vec3(0.025, 0.4, 1.0), vec3(0.72, 0.045, 1.0), accent);
       colour = mix(vec3(0.001, 0.004, 0.018), tunnelColour, tunnelRing * mix(0.2, 0.92, tunnelDepth));
-      colour = mix(colour, pearl, streaks);
+      colour = mix(colour, brightCyan, streaks);
     } else if (mode < 38.5) {
       vec3 kaleidoP = p * mix(2.6, 10.0, controlA);
       float kaleidoWarp = fbm(moving * 0.52) - 0.5;
@@ -757,7 +830,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       }
       circuitGlow = clamp(circuitGlow * 0.36, 0.0, 1.0);
       signal = clamp(circuit * max(contrast, 0.58) + circuitGlow * accent * 0.42, 0.0, 1.0);
-      vec3 circuitColour = mix(vec3(0.08, 0.84, 0.72), vec3(0.78, 0.26, 1.0), circuitGlow);
+      vec3 circuitColour = mix(vec3(0.025, 1.0, 0.68), vec3(0.68, 0.055, 1.0), circuitGlow);
       colour = mix(vec3(0.001, 0.012, 0.018), circuitColour, circuit * 0.82 + circuitGlow * accent * 0.32);
     } else if (mode < 40.5) {
       vec3 singularityDirection = normalize(vec3(0.52, 0.34, 0.78));
@@ -782,7 +855,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float outerLens = pow(0.5 + 0.5 * cos((angularDistance * 8.0 - time * speed * 0.3) * PI), 7.0);
       outerLens *= smoothstep(coreRadius + 0.14, coreRadius + 0.34, angularDistance) * (1.0 - smoothstep(1.0, 1.6, angularDistance));
       signal = clamp((halo + accretionDisk * 0.58 + outerLens * 0.2) * max(contrast, 0.62) * (1.0 - core), 0.0, 1.0);
-      vec3 accretionColour = mix(vec3(1.0, 0.3, 0.035), vec3(0.56, 0.22, 1.0), accent);
+      vec3 accretionColour = mix(vec3(1.0, 0.26, 0.025), vec3(0.52, 0.055, 1.0), accent);
       colour = mix(vec3(0.001, 0.0015, 0.003), accretionColour, clamp(halo + accretionDisk * 0.46 + outerLens * 0.12, 0.0, 1.0) * (1.0 - core));
     } else if (mode < 41.5) {
       vec3 ringAxisA = normalize(vec3(0.22, 0.94, -0.26));
@@ -796,7 +869,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float rings = max(ringA, ringB * detail);
       float ringGlow = pow(clamp(rings, 0.0, 1.0), mix(1.8, 0.72, accent));
       signal = ringGlow * max(contrast, 0.62);
-      colour = mix(vec3(0.002, 0.035, 0.05), mix(vec3(0.16, 0.92, 0.76), pearl, accent), ringGlow);
+      colour = mix(vec3(0.002, 0.035, 0.05), mix(vec3(0.025, 1.0, 0.64), brightCyan, accent), ringGlow);
     } else if (mode < 42.5) {
       vec3 truchetWeights = pow(abs(p), vec3(4.0));
       truchetWeights /= max(truchetWeights.x + truchetWeights.y + truchetWeights.z, 0.0001);
@@ -810,22 +883,39 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       float tileLines = dot(vec3(tileX, tileY, tileZ), truchetWeights);
       float tileFill = smoothstep(0.52, 0.82, fbm(moving * 0.58)) * accent;
       signal = clamp(tileLines * max(contrast, 0.62) + tileFill * 0.2, 0.0, 1.0);
-      colour = mix(vec3(0.004, 0.04, 0.045), vec3(0.64, 1.0, 0.84), tileLines);
-      colour = mix(colour, vec3(0.18, 0.42, 0.58), tileFill * 0.46);
+      colour = mix(vec3(0.004, 0.04, 0.045), vec3(0.04, 1.0, 0.62), tileLines);
+      colour = mix(colour, vec3(0.035, 0.5, 1.0), tileFill * 0.46);
     } else {
       signal = smoothstep(0.28, 0.74, field) * 0.34;
-      colour = mix(darkBody, deepCyan, signal);
+      colour = mix(darkBody, vec3(0.02, 0.43, 0.62), signal);
     }
 
     return vec4(colour, clamp(signal, 0.0, 1.0));
   }
 
   void main() {
+    if (uSilhouetteEnabled > 0.5) {
+      vec2 delta = gl_FragCoord.xy - uSilhouetteCenter;
+      float slot = fract(atan(delta.y, delta.x) / 6.28318530718 + 1.0) * 128.0;
+      float index = floor(slot);
+      float a = texture2D(uSilhouetteRadii, vec2((index + 0.5) / 128.0, 0.5)).r;
+      float b = texture2D(uSilhouetteRadii, vec2((mod(index + 1.0, 128.0) + 0.5) / 128.0, 0.5)).r;
+      if (length(delta) > mix(a, b, fract(slot))) discard;
+    }
     float authoredTime = uTime;
     float authoredRotation = authoredTime * (0.018 + uFluidity * 0.06) + uLookRotation * TAU;
     vec3 direction = normalize(vSurfaceDirection);
     direction.xz = rotate2d(authoredRotation) * direction.xz;
     direction.xy = rotate2d(uLookRotation * TAU * 0.37) * direction.xy;
+
+    // Content anchoring changes sampling only. Keep the sphere, projector masks,
+    // region boundaries and normals on their original geometry coordinates.
+    vec3 contentPoint = direction;
+    if (uContentMotionEnabled > 0.5) {
+      contentPoint = vContentLocalPosition * uContentMotionScale + uContentMotionOffset;
+      contentPoint.xz = rotate2d(authoredRotation) * contentPoint.xz;
+      contentPoint.xy = rotate2d(uLookRotation * TAU * 0.37) * contentPoint.xy;
+    }
 
     float steppedTime = floor(authoredTime * (2.0 + uGlitch * 15.0)) /
       max(2.0, 2.0 + uGlitch * 15.0);
@@ -892,7 +982,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
 
     vec4 authored = evaluateShader(
       uShaderMode,
-      direction,
+      contentPoint,
       authoredTime,
       uShaderSeed,
       clamp(uShaderParamA, 0.0, 1.0),
@@ -925,7 +1015,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
       }
       vec4 regionSample = evaluateShader(
         regionStyle,
-        direction,
+        contentPoint,
         authoredTime,
         uShaderSeed + regionStyle * 0.037,
         clamp(uShaderParamA, 0.0, 1.0),
@@ -1048,7 +1138,7 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
         float edgeDistance = geometryStyle < 2.0 ? sliceEdge : geometryStyle < 3.0 ? tileEdge : min(abs(splitCoordinate), faceBoundary);
         float edgeMask = smoothstep(0.002, mix(0.015, 0.14, uLivingSkinEdgeSoftness), edgeDistance);
         float panelWeight = panelEnabled * sequenceGate * eventEnvelope * mix(1.0, breathing, uLivingSkinBreath) * edgeMask * mix(0.38, 1.08, phraseEnergy);
-        vec4 panelSkin = evaluateShader(style, direction, authoredTime, styleHash,
+        vec4 panelSkin = evaluateShader(style, contentPoint, authoredTime, styleHash,
           clamp(uShaderParamA, 0.0, 1.0), clamp(uShaderParamB, 0.0, 1.0),
           clamp(uShaderParamC, 0.0, 1.0), clamp(uShaderParamD, 0.0, 1.0),
           clamp(uShaderParamE, 0.0, 1.0), residualFault);
@@ -1056,7 +1146,16 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
         coverage = max(coverage * 0.18, panelSkin.a * panelWeight);
       }
       coverage = pow(clamp(coverage, 0.0, 1.0), mix(1.6, 0.4, uLookSoftness));
-      surfaceColour = finishShaderColour(surfaceColour);
+      // Composite the real envelope grid OVER the imaginary interior, including
+      // empty black cavity pixels. Coverage and premultiplied radiance agree.
+      if (uShaderMode > 43.5 && uShaderMode < 47.5 && uLookShellGrid > 0.0) {
+        float shellCoverage = outerShellGrid(vSurfaceDirection) * clamp(uLookShellGrid, 0.0, 1.0);
+        vec3 shellColour = vec3(0.04, 0.60, 1.0);
+        float combinedCoverage = shellCoverage + coverage * (1.0 - shellCoverage);
+        vec3 combinedRadiance = shellColour * shellCoverage + surfaceColour * coverage * (1.0 - shellCoverage);
+        surfaceColour = combinedRadiance / max(combinedCoverage, 0.00001);
+        coverage = combinedCoverage;
+      }
     } else if (uProjectionPattern < 1.5) {
       float coverageRisk = smoothstep(0.0, 0.46, rigCoverage);
       float overlapSafe = smoothstep(0.46, 0.82, rigCoverage);
@@ -1088,69 +1187,54 @@ export const ORBITAL_SURFACE_FRAGMENT_SHADER = /* glsl */ `
     float beautyDiffuse = max(dot(beautyNormal, beautyLight), 0.0);
     float beautySpecular = pow(max(dot(beautyNormal, beautyHalf), 0.0), mix(18.0, 92.0, 1.0 - uMaterialRoughness));
     float beautyFresnel = pow(1.0 - max(dot(beautyNormal, viewDirection), 0.0), 5.0);
-    surfaceColour *= mix(1.0, 0.72 + beautyDiffuse * 0.62, uBeautyLighting);
-    surfaceColour += mix(vec3(0.3, 0.62, 0.82), vec3(1.0, 0.74, 0.46), uMelody) *
-      (beautySpecular * 0.34 + beautyFresnel * 0.12) * uBeautyLighting;
-    surfaceColour += mix(vec3(0.06, 0.42, 0.7), vec3(0.6, 0.9, 1.0), uMelody) *
-      (0.08 + coverage * 0.24) * uSphereGlow;
-    float rim = pow(1.0 - abs(dot(normalize(vWorldNormal), viewDirection)), 3.1);
-    float surfaceBreath = uOutputPreviewMode > 0.5
-      ? 1.0
-      : 0.88 + 0.12 * sin(authoredTime * 0.42 + baseField * 8.0 + vDeformation * 18.0);
+    // The artwork is emitted colour. Beauty highlights carry that pigment,
+    // rather than adding white/cyan light over every coloured patch.
+    vec3 highlightPigment = surfaceColour;
+    surfaceColour *= mix(1.0, 0.82 + beautyDiffuse * 0.18, uBeautyLighting);
+    surfaceColour += highlightPigment *
+      (beautySpecular * 0.15 + beautyFresnel * 0.06) * uBeautyLighting;
+    surfaceColour += highlightPigment * (0.06 + coverage * 0.08) * uSphereGlow;
     float trackingLight = mix(0.18, 1.0, uTrackingConfidence) * mix(0.3, 1.0, uStateValid);
-    float authoringFloor = uProjectionPattern < 0.5 ? uPreviewExposure * 0.72 : 0.0;
-    float confidence = max(trackingLight, authoringFloor);
+    // The design preview shows native colour; tracking quality is reported by
+    // the HUD. Physical rasters retain confidence, feather and optical masks.
+    float confidence = uOutputPreviewMode > 0.5 ? trackingLight : 1.0;
     float outputMask = uOutputPreviewMode > 1.5 ? selectedOutputWeight : 1.0;
-    float projectedLight = coverage * surfaceBreath * confidence * outputMask;
-    // Projector rasters are an authored light signal, not a dim reflection in
-    // the warehouse simulation. Keep them responsive to the shader controls,
-    // but prevent legacy low-energy score states from crushing the image.
-    float outputSignal = step(0.5, uOutputPreviewMode);
-    float signalBrightness = mix(uBrightness, max(uBrightness, 0.82), outputSignal);
-    float signalEnergy = mix(uEnergy, max(uEnergy, 0.70), outputSignal);
-    float signalExposure = mix(uPreviewExposure, max(uPreviewExposure, 0.78), outputSignal);
-    float luminance =
-      mix(0.42, 1.8, signalBrightness) *
-      mix(0.64, 1.28, signalEnergy) *
-      mix(0.72, 1.68, signalExposure);
-
-    vec3 colour;
+    float projectedLight = uFullFrameArtworkTest > 0.5 ? 1.0 : clamp(coverage, 0.0, 1.0) * confidence * outputMask;
+    // Native pigments are authored in display sRGB. Decode once into linear
+    // light, then apply geometric masks once. ACES remains on the room, but
+    // never photographs this artwork or turns bright pigments into white.
+    vec3 pigment = uProjectionPattern < 0.5 ? finishShaderColour(surfaceColour) : surfaceColour;
+    vec3 emittedLight = uProjectionPattern < 0.5
+      ? nativeProjectionLight(pigment)
+      : sRGBTransferEOTF(vec4(limitProjectionChroma(pigment), 1.0)).rgb;
+    vec3 colour = emittedLight;
     if (uOutputPreviewMode > 0.5) {
-      vec3 outputSurface = uOutputPreviewMode > 1.5
-        ? max(surfaceColour - vec3(selectedOutputBlack), vec3(0.0))
-        : surfaceColour;
-      // A modest HDR drive fills the 8-bit projector signal before ACES
-      // highlight roll-off, giving saturated shaders punch without hard clips.
-      colour = outputSurface * projectedLight * luminance * 1.8;
+      if (uOutputPreviewMode > 1.5) colour = max(colour - vec3(selectedOutputBlack), vec3(0.0));
+      colour *= projectedLight;
     } else {
-      colour = vec3(0.0025, 0.0032, 0.0042);
-      float reflected = projectedLight * mix(0.42, 1.22, uMaterialReflectance);
-      float wash = uMaterialTranslucency * uMaterialInternalBleed *
-        mix(0.06, 0.34, 1.0 - uMaterialRoughness) * confidence;
-      vec3 washedSurface = mix(
-        surfaceColour,
-        vec3(dot(surfaceColour, vec3(0.333))),
-        wash * 0.46
-      );
-      colour += washedSurface * reflected * luminance;
-      colour += washedSurface * wash * luminance;
-      colour += mix(vec3(0.02, 0.43, 0.62), vec3(0.76, 0.92, 1.0), uMelody) *
-        rim * (0.012 + 0.05 * uDensity) * confidence;
+      // Optional illustrative material response, always a scalar. It never
+      // mixes pigment with grey/white, and never affects the physical raster.
+      float reflectedGain = uMaterialReflectance * (1.0 - 0.35 * uMaterialTranslucency);
+      float bleedGain = 0.25 * uMaterialTranslucency * uMaterialInternalBleed;
+      float materialGain = clamp(reflectedGain + bleedGain, 0.0, 1.0);
+      colour *= projectedLight * uPreviewExposure * mix(1.0, materialGain, clamp(uBeautyLighting, 0.0, 1.0));
     }
-
-    gl_FragColor = vec4(colour, 1.0);
-    #include <tonemapping_fragment>
+    if (uOutputPreviewMode > 1.5) colour = max(colour, vec3(uTrackingFill));
+    gl_FragColor = vec4(colour * uEstimatedOpacity, 1.0);
     #include <colorspace_fragment>
   }
 `;
 
 export function createOrbitalSurfaceMaterial(): THREE.ShaderMaterial {
-  return new THREE.ShaderMaterial({
+  const material = new THREE.ShaderMaterial({
     name: "OrbitalProjectedSurface",
     vertexShader: ORBITAL_SURFACE_VERTEX_SHADER,
     fragmentShader: ORBITAL_SURFACE_FRAGMENT_SHADER,
     uniforms: {
       uTime: { value: 0 },
+      uContentMotionEnabled: { value: 0 },
+      uContentMotionScale: { value: 1 },
+      uContentMotionOffset: { value: new THREE.Vector3() },
       uCenter: { value: new THREE.Vector3(0, 3.35, 0) },
       uRadii: { value: new THREE.Vector3(2.5, 2.5, 2.5) },
       uShapeAngle: { value: 0 },
@@ -1159,6 +1243,12 @@ export function createOrbitalSurfaceMaterial(): THREE.ShaderMaterial {
       uLowerBulge: { value: 0.68 },
       uAsymmetry: { value: 0.62 },
       uEnergy: { value: 0.3 },
+      uEstimatedOpacity: { value: 1 },
+      uSilhouetteEnabled: { value: 0 },
+      uSilhouetteCenter: { value: new THREE.Vector2() },
+      uSilhouetteRadii: { value: null },
+      uFullFrameArtworkTest: { value: 0 },
+      uTrackingFill: { value: 0 },
       uBrightness: { value: 0.4 },
       uDensity: { value: 0.2 },
       uFluidity: { value: 0.45 },
@@ -1170,7 +1260,8 @@ export function createOrbitalSurfaceMaterial(): THREE.ShaderMaterial {
       uResidual: { value: new THREE.Vector3() },
       uTrackingConfidence: { value: 1 },
       uStateValid: { value: 1 },
-      uPreviewExposure: { value: 0.68 },
+      uPreviewExposure: { value: 1 },
+      uAngularPixelSpan: { value: 2 * Math.tan(Math.PI / 8) / 1080 },
       uProjectorPositions: {
         value: Array.from({ length: 5 }, () => new THREE.Vector3()),
       },
@@ -1212,6 +1303,11 @@ export function createOrbitalSurfaceMaterial(): THREE.ShaderMaterial {
       uLookHue: { value: DEFAULT_SHADER_LOOK_CONTROLS.hue },
       uLookSaturation: { value: DEFAULT_SHADER_LOOK_CONTROLS.saturation },
       uLookContrast: { value: DEFAULT_SHADER_LOOK_CONTROLS.contrast },
+      uLookExposure: { value: DEFAULT_SHADER_LOOK_CONTROLS.exposure },
+      uLookBrightness: { value: DEFAULT_SHADER_LOOK_CONTROLS.brightness },
+      uLookShellGrid: { value: DEFAULT_SHADER_LOOK_CONTROLS.shellGrid },
+      uLookShellGridDensity: { value: DEFAULT_SHADER_LOOK_CONTROLS.shellGridDensity },
+      uLookShellGridWidth: { value: DEFAULT_SHADER_LOOK_CONTROLS.shellGridWidth },
       uLookSoftness: { value: DEFAULT_SHADER_LOOK_CONTROLS.softness },
       uLookLevel: { value: DEFAULT_SHADER_LOOK_CONTROLS.level },
       uMaterialReflectance: { value: 0.82 },
@@ -1238,8 +1334,19 @@ export function createOrbitalSurfaceMaterial(): THREE.ShaderMaterial {
       uSphereGlow: { value: 0 },
     },
     side: THREE.FrontSide,
-    toneMapped: true,
+    // Bounded native artwork owns its colour signal; only the room uses ACES.
+    toneMapped: false,
   });
+  const viewport = new THREE.Vector4();
+  material.onBeforeRender = (renderer, _scene, camera) => {
+    renderer.getCurrentViewport(viewport);
+    const span = 2 / (Math.max(1, viewport.w) * Math.max(0.0001, Math.abs(camera.projectionMatrix.elements[5])));
+    if (material.uniforms.uAngularPixelSpan.value !== span) {
+      material.uniforms.uAngularPixelSpan.value = span;
+      material.uniformsNeedUpdate = true;
+    }
+  };
+  return material;
 }
 
 export function setOrbitalSurfaceLookControls(
@@ -1252,6 +1359,11 @@ export function setOrbitalSurfaceLookControls(
   material.uniforms.uLookHue.value = resolved.hue;
   material.uniforms.uLookSaturation.value = resolved.saturation;
   material.uniforms.uLookContrast.value = resolved.contrast;
+  material.uniforms.uLookExposure.value = resolved.exposure;
+  material.uniforms.uLookBrightness.value = resolved.brightness;
+  material.uniforms.uLookShellGrid.value = resolved.shellGrid;
+  material.uniforms.uLookShellGridDensity.value = resolved.shellGridDensity;
+  material.uniforms.uLookShellGridWidth.value = resolved.shellGridWidth;
   material.uniforms.uLookSoftness.value = resolved.softness;
   material.uniforms.uLookLevel.value = resolved.level;
   return resolved;

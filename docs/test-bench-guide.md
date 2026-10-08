@@ -158,3 +158,92 @@ Browser cadence is not projector refresh confirmation. Synchronising host/browse
 World-class fast-motion performance remains a physical validation target. No current software test establishes venue accuracy, infrared suitability, rotation tracking, multi-camera fusion, multi-projector calibration or motion-to-photon latency.
 
 Camera calibration tooling and measured-observation format: `../orbital-tracker/docs/STAGE_A_OFFLINE_CALIBRATION.md`. The offline solver uses independent validation observations and exports the camera JSON accepted here.
+
+## 7 October 2026: larger-balloon session
+
+Use **4A tonight · 2 m balloon** in Quick start. It preserves the previous profile, retains camera/projector hardware settings and lens positions, sets the proposed diameter to 2 m and clears the previous venue alignment. **Restore previous profile** recovers the former settings without silently reactivating its scan. If the existing positions conflict with a 2 m ball, an explicit pending layout survives reload until corrected. Measure the actual diameter; 2 m is provisional. The larger fan is a session note, not a software-controlled or validated fan model.
+
+At the venue: confirm diameter, frame the entire travel area, place the projector window full screen, keep the balloon stationary with the fan off, then use the existing Scan and Go live flow. Follow the infrared-off/on prompts. A new camera location requires a new scan.
+
+In Looks, the top Movement & New Looks panel contains normal surface mapping, opposite motion with gain 0–4×, world lock and Recenter. Opposite gain 1 means content visibly moves opposite at the balloon's translation speed; gain 3 means three times that speed. World lock cancels translation, but authored shader animation continues. Set animation speed to zero to isolate the optical illusion. Recenter sets the current location as a fresh content reference. Settings persist; tracking anchors do not. These modes never move the silhouette or alter the physical tracking estimate.
+
+Five new algorithms each have 16 deterministic variants: Paint splatter, Interior orbits, Interior crystal, Interior tidal, Back hemisphere mesh. Featured buttons select the first variant; the existing Prev/Next controls explore the others. Paint uses multicoloured impacts and black empty areas. Interiors and rear mesh are virtual, viewpoint-dependent views, not captured balloon interiors, actual rear surfaces or measured rotation. Finite virtual interiors can move out of view under large content offsets. These additions target Studio's WebGL renderer; equivalent native WGSL implementations are not included.
+
+Verified: 300 unit tests in 61 files passed with one worker; TypeScript and stable build passed. Parallel timing tests in the separate levitation module exceeded strict wall-clock thresholds under concurrent browser load, then passed serially with no threshold changes. In-app GPU checks rendered all five new algorithms without console errors; changing motion modes, gain, recenter, saved profile, restore and 2 m reload were exercised. Laptop width 1280 px now has no horizontal document overflow. Mathematical tests cover world/raster cancellation, opposite sign, frame-rate independence, dropped tracking, source changes and invalid samples. This is software evidence, not physical latency, projection accuracy or fan stability.
+
+The Mac login launcher now serves the stable build at port 4178. It previously started the development copy at 4190, leaving the normal address unavailable. The camera bridge was started on 8765 in explicitly simulated mode for software checks. If the Mac restarts, run `./scripts/serve-test-bridge.sh` before opening the bench; the app will connect automatically.
+
+### Further features worth exploring after tonight
+
+1. A/B motion recording and replay: capture one actual trajectory and compare normal, opposite and world-locked content against the same movement. This is the most useful next addition because it makes creative judgement repeatable.
+2. Motion-triggered paint: use reliable acceleration peaks or direction reversals to trigger impacts, with debouncing so tracking noise does not produce a burst.
+3. Depth-parallax control: smoothly blend a surface graphic into the virtual interior, calibrated for one intended audience position.
+
+These are proposed follow-ups, not implemented capabilities. Keep live fan control out of the visual app until its hardware and operating limits are separately established.
+
+### Per-preset projection controls and outer shell
+
+The visible **Projection colour & shell** panel provides exposure (-3 to +3 stops), linear brightness (0–2×), contrast, saturation (0–3×), hue, scale, rotation, softness and level. Brightness and exposure adjust the native linear light signal. A scalar maximum-channel limiter preserves colour ratios above the output range; the artwork bypasses photographic tone mapping. Brightness zero produces black artwork; saturation zero removes colour from highlights as well as the base shader. Preview light remains a separate scene control.
+
+Every preset selection starts at neutral exposure (0 EV), 100% native brightness, full original colour (saturation 1), neutral contrast and full level. This supersedes the earlier forced +3 EV policy, including older saved grading values. Preview light also returns to 100%. Manual grading applies immediately; selecting a preset restores these bright starting levels. Shape and shell settings remain saved per variant. Reset uses the same bright starting levels for the selected preset. Shader-specific parameter controls are now accessible without expert mode; their Save button retains the existing full-preset override workflow.
+
+Interior orbits, crystal, tidal and rear-hemisphere mesh include an outer shell grid (default strength 0.25). Adjust strength, density and thickness, or set strength to zero to hide it. Its coordinates come from the unrotated balloon surface, independent of the displaced interior artwork. It is a virtual spherical shell, not a reconstruction of physical latex topology.
+
+Verification: 303 tests passed; final grading refinement passed 14 focused surface/control tests; TypeScript and stable build passed. Browser checks verified independent preset values, reload persistence, brightness zero, saturation zero, grid on/off and crystal-with-shell appearance, with no console errors. Physical brightness and clipping remain on-site checks.
+
+Historical +3 EV selection update, superseded by the native-colour correction below: 15 focused tests passed, TypeScript and stable build passed. Browser checks confirmed that switching away from a dimmed, desaturated preset and returning restores +3 EV and saturation 1, with no console errors. Stable version: 2026-10-07T14:06:50. Physical projection brightness remains unverified.
+
+### Rendering and live-look workflow review, 7 October
+
+The Looks workspace now starts with six authored balloon compositions. These reuse existing shaders with deliberate parameters, seeds, animation speeds and movement settings, adding no rendering passes:
+
+- Confetti blasts: fast small paint impacts over black.
+- Wet paint layers: larger retained splashes and ragged trails.
+- Suspended crystal: slow virtual crystal with a fine outer shell grid.
+- Orbital mechanism: virtual rings and orbiting cores inside a visible cage.
+- Anchored grid: frozen animation with world-locked translation.
+- Counterflow filaments: electric threads with 3× opposite translation.
+
+Each composition now loads at 0 EV, brightness 1 and saturation 1; the earlier +3 EV starting policy has been superseded. Recipes alter artwork and content movement. Their virtual interiors remain view-dependent illusions. They do not change camera, rig, output release or fan settings. Individual test looks and manual movement controls remain available in compact disclosure panels.
+
+Search, family and GPU filters now browse without changing the active artwork. Select a card explicitly to switch. The active name, favourites, animation speed and shader-specific controls sit above the catalogue. Favourites persist in this browser for both catalogue variants and named compositions. Composition favourites recall their authored settings and movement; they are not snapshots of unsaved manual edits. Audiovisual Show Controls remain available below the shader shelf.
+
+Coverage diagnostics run at most ten times per second for changing geometry, skip unchanged geometry and refresh immediately after explicit rig edits. Mapping preview GPU readbacks run only for visible heads, at ten Hz aggregate, and stop completely while a direct projector window is open. Standby heads are skipped. Direct projector output retains its existing cadence and raster. Thumbnails render one visible card per idle turn, suspend during projector output, and reuse a bounded 96-entry pixel cache (about 8.3 MB maximum cached pixels).
+
+Runtime counters on the viewport expose coverage updates, mapping readbacks, thumbnail readbacks/cache hits and output priority. These are software diagnostics, not GPU timings or measured camera-to-projector latency. A CPU-only coverage microbenchmark on this Mac measured about 0.405 ms per 512-sample/five-head analysis; this does not establish physical latency.
+
+The dashboard can close projector windows together. Dashboard reload/unload closes owned output windows and cancels their frame loops. Mapping preview tiles visibly identify pauses during output priority.
+
+Verification: 317 tests across 64 files were exercised. Three pre-existing wall-clock timing checks in the separate levitation model failed during the full run, then all 29 tests in those three files passed in isolation without changing thresholds. TypeScript and the stable build passed. Browser checks confirmed all six compositions, +3 EV/full-colour settings, filters preserving active content, favourites surviving reload and restoring movement. Projector-window checks kept blackout enabled. Physical output latency and venue performance remain on-site checks.
+
+Recommended next creative extension: movement-triggered paint density or impacts, driven by tracked speed with a clear sensitivity control. This is a proposed follow-up, not an implemented capability.
+
+### Native shader colour correction, 7 October
+
+The source artwork now supplies projection-ready colour at neutral exposure. Increasing exposure was whitening patches because the previous path multiplied HDR drive and then used per-channel ACES compression. The correction changes source palettes, opacity and signal ownership, rather than relying on that gain.
+
+- Reauthored saturated native palette endpoints across the coloured shader families. Pale shared highlights are richer pigments; metallic chrome retains its identity. The neutral membrane is a brighter cyan texture with its old standby attenuation removed.
+- Paint uses source-over coverage and returns straight colour. Orbital rings, tidal layers and the rear mesh also return straight colour plus coverage. Coverage is applied once in the output compositor, preserving faded droplets and thin lines rather than squaring their opacity.
+- Crystal faces have a brighter coloured shadow range and pigment-tinted edges. Directional face shading, wet-paint variation and interior depth remain. The outer shell grid is cyan rather than pale white.
+- Native palettes are authored in display sRGB, bounded without normalising shaded pixels below one, decoded once to linear light, adjusted by brightness/exposure, then encoded once for display. Values above range use a shared scalar limiter, preserving linear RGB chromaticity instead of clipping each channel into white.
+- The sphere artwork bypasses ACES; the room retains it. Direct and structured-light projector rendering use the same native signal. Thumbnail targets now store sRGB bytes so their readback images use the correct transfer.
+- Preset selection restores 0 EV, brightness 100%, saturation 100% and neutral contrast. Exposure remains an optional manual adjustment. Legacy score brightness and energy no longer multiply the entire projector colour signal. Optical feathering, black correction, confidence and the existing output gate remain outside the source-colour normalization.
+- Material preview lighting and glow start at zero. Optional material response affects the twin through a scalar brightness proxy, without whitening pigment or changing physical projector colour. It is illustrative, not measured latex transmission.
+
+Verification: 37 focused tests passed across source colour, shader contracts, starting controls, recipes, saved overrides, living skins, render export and output gating. The final palette refinement passed 15 shader/colour tests. TypeScript and stable build passed. Browser checks exercise all 48 algorithms at 0 EV/100% brightness/100% saturation and check the creative recipes and manual grading; no physical brightness or projector gamut measurement is inferred from these checks.
+
+Iridescent film refinement, 7 October: removed the film's dark navy palette blend and its global contrast attenuation. The unshaded spectral palette now reaches full native colour through a common RGB gain, followed by gentle band relief. At default Bands, coverage ranges from approximately 0.801 to 1.0, instead of 0.204 to 0.728. Bands still changes the interference frequency and ripple depth; flow, sheen and colour shift remain adjustable. This is a source-level change shared by all 16 variants, with no extra passes or exposure boost. Exposure remains 0 EV, brightness and saturation 100%. Twenty focused tests, TypeScript and the stable build passed. All 16 variants were selected in the browser with no console errors, and the stronger colour was visually checked in paused and animated previews. Stable version: 2026-10-07T15:21:58. Physical projector brightness remains an on-site check.
+
+### Iridescent line studies, 7 October
+
+Three new one-click studies sit at the top of Looks, above the existing six balloon compositions:
+
+- Rainbow filaments: dense fine rainbow contours over black, with bends through multiple axes.
+- Chromatic contours: broader curling colour ribbons paired with narrower contrasting lines and separated by black gaps.
+- Monochrome squiggles: a different warped closed-ridge field, resembling fingerprints and topography. Bright white lines on black; Black / white polarity reverses them above halfway.
+
+All three authored studies use Iridescent film / 01's flow setting (approximately 0.524), texture scale setting (approximately 0.720), and 1.75× animation clock. Their different line geometry changes the visible motion, but the underlying advection and carrier drift use the same gentle rates. Selecting a study restores 0 EV, brightness 100%, saturation 100%, neutral hue and surface-following content. Texture scale, Flow, Line density, Line width and Colour shift (or Black / white polarity) are available under Shader-specific controls. Existing favourites also recall these studies.
+
+The line mask is derived from a shared flowing 3D field on the sphere, with bounded antialiasing from the current raster height, camera optics and distance. Shader derivatives were isolated as the cause of a faint triangular artefact during preview testing, so they do not control the new line masks. Unresolved ink fades when a contour period becomes subpixel, preserving black gaps rather than averaging grey coverage across the surface. Pigment stays separate from coverage. These are three new single-pass WebGL algorithms, with no textures, added render passes or readback loops. Renderer slots 48–50 are appended so existing look IDs keep their meanings. The catalogue now contains 51 algorithms and 816 parameter variants; the nine featured compositions include the three authored line studies. No equivalent new native WGSL implementation is claimed.
+
+Verification: the eight-file focused run passed 50 tests. The final raster-filter refinement passed 16 shader/colour tests, including one new test for raster and camera changes, giving 51 distinct focused tests across those runs. TypeScript, stable build and diff checks passed. Browser checks confirmed all three one-click studies at 1.75×, neutral exposure and full native brightness/colour, density and width extremes, monochrome reversal, paused frames and animated previews. Final previews have clean black gaps and continuous strokes without the earlier triangular overlay; no console errors. Stable version: 2026-10-07T15:57:10. These checks establish software appearance, not physical projector brightness, latency or calibrated tracking performance. Review images are in `/Users/kitwebster/Generated with AI/Images/2026-10-07-Orbital/`: `Orbital_Rainbow_Filaments.jpg`, `Orbital_Chromatic_Contours.jpg`, and `Orbital_Monochrome_Squiggles.jpg`.

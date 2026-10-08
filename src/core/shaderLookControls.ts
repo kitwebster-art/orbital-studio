@@ -1,4 +1,9 @@
 export interface ShaderLookControls {
+  exposure: number;
+  brightness: number;
+  shellGrid: number;
+  shellGridDensity: number;
+  shellGridWidth: number;
   motion: number;
   scale: number;
   rotation: number;
@@ -28,6 +33,11 @@ export interface ShaderLookControlDefinition {
  */
 export const SHADER_LOOK_CONTROL_DEFINITIONS: readonly ShaderLookControlDefinition[] =
   Object.freeze([
+    { id: "exposure", label: "Projection exposure", min: -3, max: 3, step: 0.05, defaultValue: 0, description: "Optional exposure adjustment in stops. Zero keeps the native shader signal; +1 doubles it. Camera exposure is separate." },
+    { id: "brightness", label: "Brightness", min: 0, max: 2, step: 0.01, defaultValue: 1, description: "Native shader light level. 100% uses the full authored colour; zero makes artwork black." },
+    { id: "shellGrid", label: "Outer grid strength", min: 0, max: 1, step: 0.01, defaultValue: 0.25, description: "Outer balloon shell grid on virtual interior and rear-mesh looks. Zero hides it." },
+    { id: "shellGridDensity", label: "Outer grid density", min: 6, max: 40, step: 1, defaultValue: 16, description: "Number of longitude divisions on the virtual balloon shell." },
+    { id: "shellGridWidth", label: "Outer grid thickness", min: 0.002, max: 0.04, step: 0.001, defaultValue: 0.008, description: "Grid line width. The shell stays on the mapped balloon independently of content movement." },
     {
       id: "motion",
       label: "Animation speed",
@@ -68,7 +78,7 @@ export const SHADER_LOOK_CONTROL_DEFINITIONS: readonly ShaderLookControlDefiniti
       id: "saturation",
       label: "Saturation",
       min: 0,
-      max: 2,
+      max: 3,
       step: 0.01,
       defaultValue: 1,
       description: "Moves from monochrome through to strongly saturated colour.",
@@ -98,7 +108,7 @@ export const SHADER_LOOK_CONTROL_DEFINITIONS: readonly ShaderLookControlDefiniti
       max: 1.5,
       step: 0.01,
       defaultValue: 1,
-      description: "Final shader intensity before the preview exposure control.",
+      description: "Fine adjustment to authored colour intensity. One preserves the preset level.",
     },
   ]);
 
@@ -113,11 +123,11 @@ export const DEFAULT_SHADER_LOOK_CONTROLS: Readonly<ShaderLookControls> =
   );
 
 export function normaliseShaderLookControls(
-  values: Partial<ShaderLookControls>,
+  values: Partial<ShaderLookControls> = {},
 ): ShaderLookControls {
   return Object.fromEntries(
     SHADER_LOOK_CONTROL_DEFINITIONS.map((definition) => {
-      const candidate = values[definition.id];
+      const candidate = values?.[definition.id];
       const finite = typeof candidate === "number" && Number.isFinite(candidate)
         ? candidate
         : definition.defaultValue;
@@ -139,4 +149,9 @@ export function advanceShaderAnimationTime(
   const safeDelta = Number.isFinite(deltaS) ? Math.max(0, deltaS) : 0;
   const safeSpeed = normaliseShaderLookControls({ motion: speed }).motion;
   return safeCurrent + safeDelta * safeSpeed;
+}
+
+/** Every preset starts at its full native signal with neutral exposure, irrespective of saved grading. */
+export function projectionStartingLook(values: Partial<ShaderLookControls> = {}): ShaderLookControls {
+  return normaliseShaderLookControls({ ...values, exposure: 0, brightness: 1, saturation: 1, contrast: 1, level: 1 });
 }

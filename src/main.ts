@@ -1,3 +1,6 @@
+import type {SphereRegistration} from "./core/sphereRegistration";
+import { ApproximateBallMapping, type ApproximateMap } from "./core/approximateBallMapping";
+import { ContentMotionPanel } from "./ui/ContentMotionPanel";
 import { installUpdateNotice } from "./ui/updateNotice";
 import { installViewportChrome } from "./ui/viewportChrome";
 import { CameraHud } from "./ui/CameraHud";
@@ -153,6 +156,12 @@ let testConsole: TestConsole | null = null;
 let cameraGeometryRecord: unknown = null;
 let projectorCalibrationRecord: unknown = null;
 let activeTestRig: TestRigSetup = structuredClone(DEFAULT_TEST_RIG);
+let trackingSmoothing=80;
+let activeApproximatePredictor: ApproximateBallMapping | null = null;
+let activeApproximateMap: ApproximateMap | null = null;
+let registrationRms: number | null = null;
+let sphereRegistration:SphereRegistration|null=null;
+let approximateAdjustment={x:20,y:18,scale:1};
 let structuredLightScan: StructuredLightResult | null = null;
 /** P1 window layout the active scan was taken with; output is blocked if the window no longer matches. */
 let structuredLightSignature: string | null = null;
@@ -1011,11 +1020,54 @@ testConsole = new TestConsole(document.querySelector<HTMLElement>('.control-colu
     previous?.close();
   },
   wantsCameraFeed: () => cameraHud.isActive,
+  silhouetteStatus: () => { const t=liveTracking.imageEllipse(); return !t || t.ageMs>120 ? "waiting for fresh edge" : activeApproximatePredictor?.outlinePhase==="held" ? "briefly held balloon edge" : t.outlinePx?.length===64 ? "64-point balloon edge" : "oval fallback: edge contrast low"; },
   trackedSpeedPxPerS: () => { const t = liveTracking.imageEllipse(); return t ? Math.hypot(t.velocityPxPerS[0], t.velocityPxPerS[1]) : null; },
   setLiveCalibration: (model) => { liveCalibration = structuredClone(model); },
   setProbeDark: (on) => scene?.setProbeDark(on),
   probeDarkDrawnAtMs: () => scene?.getProbeDarkRenderedAtMs() ?? null,
   setProjectionLeadS: (seconds) => { projectionLeadS = seconds; },
+  registrationSummary: () => sphereRegistration ? `sphere model ${sphereRegistration.rmsPx.toFixed(1)} px RMS; assumed lens model` : registrationRms===null ? "3D uncalibrated" : `local 2D fit ${registrationRms.toFixed(1)} px RMS; 3D uncalibrated`,
+  registrationAnchor: () => {
+    const t=liveTracking.imageEllipse(),map=activeApproximateMap;if(!t||!map||t.ageMs>120) return null;
+    const e=mapEllipseThroughHomography(map.matrix,t),raster=ui.getOutputRaster(),sx=raster.width/map.projectorWidth,sy=raster.height/map.projectorHeight;
+    return {centerPx:[e.centerPx[0]*sx+approximateAdjustment.x,e.centerPx[1]*sy+approximateAdjustment.y] as [number,number],radiusPx:e.majorPx*.5*Math.sqrt(sx*sy)*approximateAdjustment.scale};
+  },
+  applySphereRegistration: (model) => {
+    if(model.schema!=="orbital.sphere-registration/1.0" || model.projectorMatrix.length!==12 || !model.projectorMatrix.every(Number.isFinite) || model.rmsPx>3 || model.heldOutMaxPx>12)throw new Error("Invalid sphere calibration");
+    sphereRegistration=model;activeApproximatePredictor?.setSphereModel(model);approximateAdjustment={x:0,y:0,scale:1};
+    localStorage.setItem('orbital.sphere-registration/1.0',JSON.stringify(model));
+  },
+  applyMovingRegistration: (result) => {
+    if(!activeApproximateMap) throw new Error("Enable estimated balloon mapping first");
+    activeApproximateMap={...activeApproximateMap,matrix:result.matrix};registrationRms=result.rmsPx;
+    approximateAdjustment={x:0,y:0,scale:1};
+    localStorage.setItem('orbital.moving-registration/1.0',JSON.stringify({schema:'orbital.local-registration/1.0',map:activeApproximateMap,rmsPx:result.rmsPx,points:result.points,createdAt:new Date().toISOString()}));
+  },
+  trackingSmoothing: (percent) => { trackingSmoothing=percent;activeApproximatePredictor?.setSmoothing(percent); },
+  adjustApproximateMapping: (x,y,scale) => { approximateAdjustment={x,y,scale}; },
+  approximateBallMapping: async (enabled) => {
+    if (!enabled) { scene?.setApproximateBallMapping(null); return; }
+    const response = await fetch('/approximate-ball-map.json');
+    if (!response.ok) throw new Error('Estimated mapping file unavailable');
+    const map = await response.json() as ApproximateMap;
+    if (!Array.isArray(map.matrix) || map.matrix.length !== 9 || !map.matrix.every(Number.isFinite)) throw new Error('Invalid estimated mapping');
+    activeApproximateMap=map;
+    try {const saved=JSON.parse(localStorage.getItem('orbital.moving-registration/1.0') ?? 'null');if(saved?.schema==='orbital.local-registration/1.0' && saved.map?.cameraWidth===map.cameraWidth && saved.map?.cameraHeight===map.cameraHeight && saved.map?.projectorWidth===map.projectorWidth && saved.map?.projectorHeight===map.projectorHeight && saved.map.matrix?.length===9 && saved.map.matrix.every(Number.isFinite) && Number.isFinite(saved.rmsPx) && saved.rmsPx<=5) {activeApproximateMap=saved.map;registrationRms=saved.rmsPx;}}catch { /* retain original estimate */ }
+    const predictor = new ApproximateBallMapping();
+    predictor.setSmoothing(trackingSmoothing);activeApproximatePredictor=predictor;
+    try {const saved=JSON.parse(localStorage.getItem('orbital.sphere-registration/1.0') ?? 'null');if(saved?.schema==='orbital.sphere-registration/1.0' && saved.cameraWidth===map.cameraWidth && saved.cameraHeight===map.cameraHeight && saved.projectorMatrix?.length===12 && saved.projectorMatrix.every(Number.isFinite) && saved.rmsPx<=3 && saved.heldOutMaxPx<=12 && saved.cameraFocalPx>100){sphereRegistration=saved;predictor.setSphereModel(saved);}}catch{ /* retain estimated mode */ }
+    scene?.setFullFrameArtworkTest(false);
+    scene?.setApproximateBallMapping(() => {
+      if (engine.mode !== 'live') return null;
+      const currentMap=activeApproximateMap ?? map;
+      const ellipse = predictor.sample(performance.now(), liveTracking.imageEllipse(), currentMap);
+      if (!ellipse) return null;
+      const raster=ui.getOutputRaster(), sx=raster.width/map.projectorWidth,sy=raster.height/map.projectorHeight;
+      return {...ellipse,outlinePx:ellipse.outlinePx?.map(([x,y])=>[(x-ellipse.centerPx[0])*sx*approximateAdjustment.scale+ellipse.centerPx[0]*sx+approximateAdjustment.x,(y-ellipse.centerPx[1])*sy*approximateAdjustment.scale+ellipse.centerPx[1]*sy+approximateAdjustment.y] as [number,number]),opacity:predictor.opacity,phase:predictor.phase,centerPx:[ellipse.centerPx[0]*sx+approximateAdjustment.x,ellipse.centerPx[1]*sy+approximateAdjustment.y] as [number,number],majorPx:ellipse.majorPx*Math.sqrt(sx*sy)*approximateAdjustment.scale,minorPx:ellipse.minorPx*Math.sqrt(sx*sy)*approximateAdjustment.scale};
+    });
+  },
+  fullFrameArtworkTest: (enabled) => scene?.setFullFrameArtworkTest(enabled),
+  projectorTrackingLight: (enabled, level) => scene?.setProjectorTrackingLight(enabled, level),
   blackout: (active) => { scene?.setOutputBlackout(active); ui.setOutputBlackout(active); },
   connectTracking: (url) => { liveTracking.setUrl(url); selectMode('live'); },
   prediction: (ms) => engine.setPredictionHorizonMs(ms),
@@ -1071,8 +1123,17 @@ testConsole = new TestConsole(document.querySelector<HTMLElement>('.control-colu
     structuredLightLayoutCheck = { atMs: -Infinity, reason: null };
     scene?.setStructuredLightOutput(result ? { active: true, qualifies: scanQualifiesForLive(result), ellipse: structuredLightEllipse, blockReason: structuredLightBlockReason } : null);
   },
-  configuration: () => ({ testRig: activeTestRig, cameraGeometry: cameraGeometryRecord, projectorCalibration: projectorCalibrationRecord, structuredLight: structuredLightScan ? { provenance: 'structured-light', result: structuredLightScan } : null, rig: scene?.getProjectionRig(), shaderPreset }),
+  configuration: () => ({ contentMotion: scene?.getContentMotion(), testRig: activeTestRig, cameraGeometry: cameraGeometryRecord, projectorCalibration: projectorCalibrationRecord, structuredLight: structuredLightScan ? { provenance: 'structured-light', result: structuredLightScan } : null, rig: scene?.getProjectionRig(), shaderPreset }),
 });
+const contentMotionPanel = new ContentMotionPanel(document.querySelector<HTMLElement>('.control-column')!, {
+  change: settings => scene?.setContentMotion(settings),
+  recenter: () => scene?.recenterContentMotion(),
+  focusBall: () => scene?.focusTestBall(),
+  focusLayout: () => scene?.focusTestLayout(),
+  selectLook: id => ui.selectTestComposition(id),
+  selectRecipe: recipe => ui.selectCreativeRecipe(recipe),
+});
+ui.setCreativeRecipeMotionHandler(settings => contentMotionPanel.setMotionSettings(settings));
 document.querySelector<HTMLButtonElement>('[data-workspace-tab="test"]')?.click();
 engine.setFanCueOverride(DEFAULT_FAN_PREVIEW_SPEED);
 syncReducedMotion();
@@ -1104,6 +1165,36 @@ if (contentStorage && score !== bundledScore) {
   ui.setAuthoringStatus("Restored saved score from this browser");
 }
 
+// Mapping tiles are diagnostics. Their GPU readback only runs while visible;
+// a visible inline inspector gets the entire budget for its selected head.
+const intersectingProjectorPreviews = new Set<HTMLCanvasElement>();
+const projectorPreviewCanvases = ui.getProjectorOutputCanvases();
+const projectorInspector = document.getElementById('output-inspector');
+const projectorInspectorCanvas = document.getElementById('output-inspector-canvas');
+let projectorInspectorVisible = false;
+function syncVisibleProjectorPreviews(): void {
+  const inspectedIndex = projectorInspectorVisible && !projectorInspector?.hidden
+    ? Number(projectorInspector?.dataset.view?.replace('projector-', '')) - 1 : -1;
+  const indices = document.hidden ? [] : inspectedIndex >= 0
+    ? [inspectedIndex]
+    : projectorPreviewCanvases.flatMap((canvas, index) => intersectingProjectorPreviews.has(canvas) ? [index] : []);
+  scene?.setProjectorPreviewIndices(indices);
+}
+const projectorPreviewObserver = new IntersectionObserver(entries => {
+  for (const entry of entries) {
+    if (entry.target === projectorInspectorCanvas) projectorInspectorVisible = entry.isIntersecting;
+    else if (entry.isIntersecting) intersectingProjectorPreviews.add(entry.target as HTMLCanvasElement);
+    else intersectingProjectorPreviews.delete(entry.target as HTMLCanvasElement);
+  }
+  syncVisibleProjectorPreviews();
+});
+for (const canvas of projectorPreviewCanvases) projectorPreviewObserver.observe(canvas);
+if (projectorInspectorCanvas) projectorPreviewObserver.observe(projectorInspectorCanvas);
+const projectorInspectorObserver = new MutationObserver(syncVisibleProjectorPreviews);
+if (projectorInspector) projectorInspectorObserver.observe(projectorInspector, { attributes: true, attributeFilter: ['hidden', 'data-view'] });
+document.addEventListener('visibilitychange', syncVisibleProjectorPreviews);
+syncVisibleProjectorPreviews();
+
 let previousFrameMs = performance.now();
 let lastTwinRenderMs = 0;
 let animationFrame = 0;
@@ -1114,7 +1205,8 @@ const TEST_MODE_TWIN_INTERVAL_MS = 42;
 /**
  * Test mode is any state where the projector output matters more than the
  * digital twin: the Test bench workspace is open, or a projector window is
- * live. The twin drops to about 5 fps, the mapping-lab tiles stop, and the
+ * live. The twin drops to about 24 fps; mapping tile readbacks pause while
+ * direct projector output is open, and the
  * render quality is pinned to low so the shared GPU stays with the output.
  */
 function syncTestMode(): boolean {
@@ -1191,6 +1283,7 @@ function tickRuntime(nowMs: number, driver: "dashboard" | "projector-output"): v
   if (cameraHud.coversTwin) renderTwin = false;
   if (renderTwin) lastTwinRenderMs = nowMs;
   scene?.update(previewSnapshot, deltaS, renderTwin);
+  if (renderTwin && scene) contentMotionPanel.update(scene.getContentMotionState());
   audio.update(previewSnapshot);
   audio.updateShaderEvents(
     previewSnapshot.showTimeS,
@@ -1250,6 +1343,9 @@ animationFrame = requestAnimationFrame(frame);
 
 window.addEventListener("beforeunload", () => {
   cancelAnimationFrame(animationFrame);
+  projectorPreviewObserver.disconnect();
+  projectorInspectorObserver.disconnect();
+  document.removeEventListener('visibilitychange', syncVisibleProjectorPreviews);
   if (reducedMotionQuery?.removeEventListener) {
     reducedMotionQuery.removeEventListener("change", onReducedMotionChange);
   } else {

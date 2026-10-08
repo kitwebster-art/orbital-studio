@@ -1,0 +1,26 @@
+{
+  "schema": "orbital.approximate-affine/1.0",
+  "label": "Estimated from quantised decoded scan pixels inside operator-observed balloon; not calibrated",
+  "cameraWidth": 1024,
+  "cameraHeight": 768,
+  "projectorWidth": 1920,
+  "projectorHeight": 1080,
+  "matrix": [
+    1.9651156976151984,
+    -0.08012852221549331,
+    107.31329208453347,
+    0.10496494472910134,
+    1.9896695618321356,
+    -259.2499068455252,
+    0.0,
+    0.0,
+    1.0
+  ],
+  "rmsPx": 3.4742824840653275,
+  "inliers": 5000,
+  "cameraAnchor": [
+    330,
+    395
+  ],
+  "radiusPx": 235
+}

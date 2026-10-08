@@ -12,6 +12,7 @@ export const CONTROL_SCHEMA = 'orbital.camera-control/1.0';
 export type CalibrationPattern =
   | { kind: 'black' }
   | { kind: 'white' }
+  | { kind: 'spot'; x: number; y: number; radius: number }
   | { kind: 'gray'; axis: 'x' | 'y'; bit: number; inverted: boolean };
 
 export interface CalibrationSettings {
@@ -67,6 +68,7 @@ export function grayBitCount(size: number): number {
 
 /** True when projector pixel (column c, row r) is white for this pattern. Bit 0 is the most significant bit. */
 export function isPatternWhite(pattern: CalibrationPattern, c: number, r: number, width: number, height: number): boolean {
+  if (pattern.kind === 'spot') {const d=(c-pattern.x)**2+(r-pattern.y)**2;return d<=pattern.radius**2 && d>=(pattern.radius*.65)**2;}
   if (pattern.kind === 'black') return false;
   if (pattern.kind === 'white') return true;
   const n = pattern.axis === 'x' ? c : r;
@@ -79,6 +81,7 @@ export function isPatternWhite(pattern: CalibrationPattern, c: number, r: number
 
 /** White runs along the pattern axis as [start, endExclusive] pairs, for fast fillRect drawing. */
 export function patternRuns(pattern: CalibrationPattern, width: number, height: number): Array<[number, number]> {
+  if (pattern.kind === 'spot') return [];
   if (pattern.kind === 'black') return [];
   const size = pattern.kind === 'white' || pattern.axis === 'x' ? width : height;
   if (pattern.kind === 'white') return [[0, size]];

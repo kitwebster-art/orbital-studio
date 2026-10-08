@@ -130,6 +130,14 @@ export const SHADER_RENDER_MODE_IDS = [
   "black-hole-lensing",
   "concentric-rings",
   "truchet-tiles",
+  "paint-splatter",
+  "interior-orbits",
+  "interior-crystal",
+  "interior-tidal",
+  "back-hemisphere-mesh",
+  "rainbow-filaments",
+  "chromatic-contours",
+  "monochrome-squiggles",
 ] as const;
 
 export function shaderRenderModeIndex(shaderId: string): number {

@@ -18,7 +18,7 @@ describe("native render project handoff", () => {
     const first = createShaderManifest();
     const second = createShaderManifest();
     expect(first.checksum).toBe(second.checksum);
-    expect(first.shaders).toHaveLength(43);
+    expect(first.shaders).toHaveLength(51);
     expect(first.shaders.find((shader) => shader.id === "geometric-grid")?.nativeImplementation)
       .toBe("wgsl:geometric-grid");
   });
